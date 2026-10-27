@@ -81,16 +81,24 @@ EXCLUDE = ["senior data analyst","data analyst","data scientist","software engin
 def score_job(title, location, roles="", skills="", resume_text=""):
     t=(title or "").lower(); loc=(location or "").lower()
     if any(x in t for x in EXCLUDE): return 0
+    role_tokens=[x.strip().lower() for x in (roles or "").split(";") if x.strip()]
+    skill_tokens=[x.strip().lower() for x in (skills or "").split(";") if len(x.strip())>=4]
+    relevant_terms=["marketplace","e-commerce","ecommerce","social media","customer support","customer service","virtual assistant","content","marketing assistant","assistente","atendimento","suporte","catalog","product listing","community manager","digital marketing","marketing coordinator","administrative assistant","customer experience","product catalog"]
+    cv=(resume_text or "").lower()
+    cv_terms=["shopee","mercado livre","tiktok shop","shein","temu","amazon","marketplace","e-commerce","ecommerce","social media","instagram","tiktok","canva","excel","catalog","product listing","ads","anúncios","atendimento","customer support","customer service","content","marketing"]
+    if not (any(x in t for x in role_tokens) or any(x in t for x in skill_tokens) or any(x in t for x in relevant_terms) or any(x in cv and x in t for x in cv_terms)):
+        return 0
     score=15
-    for token in [x.strip().lower() for x in (roles or "").split(";") if x.strip()]:
+    for token in role_tokens:
         if token in t: score=min(100,score+20)
-    for token in [x.strip().lower() for x in (skills or "").split(";") if len(x.strip())>=4]:
+    for token in skill_tokens:
         if token in t: score=min(100,score+8)
-    for token in ["marketplace","e-commerce","ecommerce","social media","customer support","customer service","virtual assistant","content","marketing assistant","assistente","atendimento","suporte","catalog","product listing"]:
+    for token in relevant_terms:
         if token in t: score=min(100,score+12)
+    for token in cv_terms:
+        if token in cv and token in t: score=min(100,score+5)
     if any(x in loc for x in ["brazil","brasil","latin america","south america","worldwide","anywhere","global","all countries"]): score=min(100,score+10)
     return min(100,score)
-
 class StatusUpdate(BaseModel):
     status: str
 class ProfileUpdate(BaseModel):
