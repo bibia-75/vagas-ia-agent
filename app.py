@@ -5,7 +5,7 @@ import httpx
 from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.responses import HTMLResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 app = FastAPI(title="Vagas IA")
 security = HTTPBasic()
@@ -40,6 +40,8 @@ def require_auth(credentials: HTTPBasicCredentials = Depends(security)):
 def db():
     con = sqlite3.connect(DB_PATH)
     con.row_factory = sqlite3.Row
+    con.execute("""CREATE TABLE IF NOT EXISTS profile (id INTEGER PRIMARY KEY CHECK(id=1), full_name TEXT, target_roles TEXT, target_salary TEXT, locations TEXT, skills TEXT, updated_at TEXT)""")
+    con.execute("INSERT OR IGNORE INTO profile(id,full_name,target_roles,target_salary,locations,skills,updated_at) VALUES(1,?,?,?,?,?,?)", ("", "Marketplace; E-commerce; Social Media; Customer Support; Assistente Virtual", "R$ 2.500+", "Remoto; Brasil", "Shopee; Mercado Livre; TikTok Shop; SHEIN; Temu; Amazon; anúncios; catálogo; Instagram; TikTok; Canva; Excel; atendimento", datetime.now(timezone.utc).isoformat()))
     con.execute("""CREATE TABLE IF NOT EXISTS jobs(
       id INTEGER PRIMARY KEY AUTOINCREMENT, url TEXT UNIQUE, title TEXT, company TEXT,
       location TEXT, source TEXT, score INTEGER, status TEXT DEFAULT 'Encontrada',
@@ -63,6 +65,13 @@ def score_job(title, location):
 class StatusUpdate(BaseModel):
     status: str
 
+class ProfileUpdate(BaseModel):
+    full_name: str = Field(default="", max_length=120)
+    target_roles: str = Field(default="", max_length=500)
+    target_salary: str = Field(default="R$ 2.500+", max_length=100)
+    locations: str = Field(default="Remoto; Brasil", max_length=300)
+    skills: str = Field(default="", max_length=2000)
+
 @app.get("/", response_class=HTMLResponse)
 def home(user: str = Depends(require_auth)):
     return (BASE / "static" / "index.html").read_text(encoding="utf-8")
@@ -70,6 +79,37 @@ def home(user: str = Depends(require_auth)):
 @app.get("/api/health")
 def health():
     return {"ok": True, "service": "vagas-ia-agent"}
+
+
+@app.get("/api/profile")
+def get_profile(user: str = Depends(require_auth)):
+    con = db()
+    row = con.execute("SELECT full_name,target_roles,target_salary,locations,skills,updated_at FROM profile WHERE id=1").fetchone()
+    con.close()
+    return dict(row) if row else {}
+
+@app.put("/api/profile")
+def save_profile(payload: ProfileUpdate, user: str = Depends(require_auth)):
+    con = db()
+    con.execute("UPDATE profile SET full_name=?,target_roles=?,target_salary=?,locations=?,skills=?,updated_at=? WHERE id=1",
+      (payload.full_name.strip(), payload.target_roles.strip(), payload.target_salary.strip(), payload.locations.strip(), payload.skills.strip(), datetime.now(timezone.utc).isoformat()))
+    con.commit()
+    con.close()
+    return {"ok": True, "message": "Perfil salvo"}
+
+@app.get("/api/export.csv")
+def export_csv(user: str = Depends(require_auth)):
+    from fastapi.responses import Response
+    import csv, io
+    con = db()
+    rows = con.execute("SELECT title,company,location,source,url,score,status,created_at FROM jobs ORDER BY score DESC").fetchall()
+    con.close()
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["Vaga","Empresa","Localização","Fonte","Link","Compatibilidade","Status","Encontrada em"])
+    writer.writerows([list(r) for r in rows])
+    return Response(content="\ufeff"+output.getvalue(), media_type="text/csv; charset=utf-8",
+                    headers={"Content-Disposition": "attachment; filename=vagas_ia.csv"})
 
 @app.get("/api/jobs")
 def list_jobs(user: str = Depends(require_auth)):
