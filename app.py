@@ -90,14 +90,33 @@ EXCLUDE = ["senior data analyst","data analyst","data scientist","software engin
 def score_job(title, location, roles="", skills="", resume_text="", description=""):
     t=(title or "").lower(); loc=(location or "").lower()
     text=(t+" "+(description or "")).lower()
-    language_blocklist=[
-        "fluent in spanish","spanish fluency","fluency in spanish","native spanish",
-        "native-level spanish","advanced spanish","spanish is required","spanish required",
-        "bilingual in spanish","bilingual spanish","professional spanish proficiency",
-        "fluent in english","english fluency","fluency in english","native-level english",
-        "advanced english required","english is required","english required","bilingual english"
+    # Exclude roles that explicitly require Spanish fluency/bilingual ability.
+    # Check both title and description; support common ATS wording in English and Portuguese.
+    spanish_required = [
+        "spanish", "español", "espanhol", "língua espanhola", "lingua espanhola",
+        "bilingual", "bilingüe", "bilíngue", "fluent in spanish", "spanish fluency",
+        "fluency in spanish", "native spanish", "native-level spanish",
+        "advanced spanish", "spanish is required", "spanish required",
+        "professional spanish proficiency", "customer support specialist, bilingual",
+        "bilingual (spanish)", "spanish-speaking", "spanish speaking",
+        "espanhol fluente", "fluência em espanhol", "fluencia en español"
     ]
-    if any(term in text for term in language_blocklist):
+    # Avoid rejecting generic "bilingual" alone unless Spanish is also mentioned.
+    spanish_markers = ["spanish", "español", "espanhol", "língua espanhola", "lingua espanhola"]
+    if any(term in text for term in spanish_markers) and (
+        any(term in text for term in ["bilingual", "bilingüe", "bilíngue", "fluent", "fluency", "native", "advanced", "required", "proficiency", "speaking", "fluente", "fluência", "fluencia"])
+        or "spanish" in t or "español" in t or "espanhol" in t
+    ):
+        return 0
+    if any(term in t for term in ["bilingual", "bilingüe", "bilíngue"]) and any(term in text for term in spanish_markers):
+        return 0
+    english_required = [
+        "fluent in english", "english fluency", "fluency in english", "native-level english",
+        "advanced english required", "english is required", "english required",
+        "professional english proficiency", "inglês fluente", "ingles fluente",
+        "fluência em inglês", "fluencia en inglés"
+    ]
+    if any(term in text for term in english_required):
         return 0
     if any(x in t for x in EXCLUDE): return 0
     role_tokens=[x.strip().lower() for x in (roles or "").split(";") if x.strip()]
@@ -260,12 +279,26 @@ async def search_jobs(user: str = Depends(require_auth), limit: int = 50):
                     found.append({"url":j.get("url"),"title":j.get("title") or "Vaga sem título","company":j.get("company_name") or "Empresa não informada","location":loc or "Remoto","source":"Remotive","description":j.get("description") or ""})
         except Exception as e: errors.append("Remotive: "+str(e)[:120])
     inserted=0
+    filtered_existing=0
     with Session() as db:
         p=db.get(Profile,1)
+        # Re-score existing records too, so previously saved jobs that now fail filters disappear.
+        for saved in db.scalars(select(Job)).all():
+            new_score=score_job(saved.title,saved.location,p.target_roles,p.skills,p.resume_text,saved.description)
+            if new_score <= 0 and saved.score > 0:
+                saved.score=0
+                filtered_existing += 1
+            elif new_score > 0:
+                saved.score=new_score
         for j in found:
             if not j.get("url"): continue
             score=score_job(j["title"],j["location"],p.target_roles,p.skills,p.resume_text,j.get("description",""))
-            if score<=0: continue
+            old=db.scalar(select(Job).where(Job.url==j["url"]))
+            if score<=0:
+                if old and old.score>0:
+                    old.score=0
+                    filtered_existing += 1
+                continue
             old=db.scalar(select(Job).where(Job.url==j["url"]))
             if old:
                 old.title=j["title"]; old.company=j["company"]; old.location=j["location"]; old.source=j["source"]; old.description=j.get("description",""); old.score=score
@@ -273,7 +306,7 @@ async def search_jobs(user: str = Depends(require_auth), limit: int = 50):
                 db.add(Job(url=j["url"],title=j["title"],company=j["company"],location=j["location"],source=j["source"],description=j.get("description",""),score=score,status="Encontrada")); inserted+=1
         db.commit()
         total=db.scalar(select(Job).where(Job.score>0).with_only_columns(Job.id).order_by(None).subquery().select()) if False else len(db.scalars(select(Job.id).where(Job.score>0)).all())
-    return {"new":inserted,"total":total,"checked":len(found),"errors":errors}
+    return {"new":inserted,"total":total,"checked":len(found),"filtered_existing":filtered_existing,"errors":errors}
 
 @app.patch("/api/jobs/{job_id}")
 def update_job(job_id:int,payload:StatusUpdate,user:str=Depends(require_auth)):
