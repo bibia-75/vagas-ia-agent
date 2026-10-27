@@ -89,52 +89,35 @@ def profile_dict(p):
 EXCLUDE = ["senior data analyst","data analyst","data scientist","software engineer","senior developer","principal engineer","account executive","financial analyst","accountant","nurse","medical doctor"]
 def score_job(title, location, roles="", skills="", resume_text="", description=""):
     t=(title or "").lower(); loc=(location or "").lower()
-    text=(t+" "+(description or "")).lower()
-    # Exclude roles that explicitly require Spanish fluency/bilingual ability.
-    # Check both title and description; support common ATS wording in English and Portuguese.
-    spanish_required = [
-        "spanish", "español", "espanhol", "língua espanhola", "lingua espanhola",
-        "bilingual", "bilingüe", "bilíngue", "fluent in spanish", "spanish fluency",
-        "fluency in spanish", "native spanish", "native-level spanish",
-        "advanced spanish", "spanish is required", "spanish required",
-        "professional spanish proficiency", "customer support specialist, bilingual",
-        "bilingual (spanish)", "spanish-speaking", "spanish speaking",
-        "espanhol fluente", "fluência em espanhol", "fluencia en español"
-    ]
-    # Avoid rejecting generic "bilingual" alone unless Spanish is also mentioned.
-    spanish_markers = ["spanish", "español", "espanhol", "língua espanhola", "lingua espanhola"]
-    if any(term in text for term in spanish_markers) and (
-        any(term in text for term in ["bilingual", "bilingüe", "bilíngue", "fluent", "fluency", "native", "advanced", "required", "proficiency", "speaking", "fluente", "fluência", "fluencia"])
-        or "spanish" in t or "español" in t or "espanhol" in t
-    ):
-        return 0
-    if any(term in t for term in ["bilingual", "bilingüe", "bilíngue"]) and any(term in text for term in spanish_markers):
-        return 0
-    english_required = [
-        "fluent in english", "english fluency", "fluency in english", "native-level english",
-        "advanced english required", "english is required", "english required",
-        "professional english proficiency", "inglês fluente", "ingles fluente",
-        "fluência em inglês", "fluencia en inglés"
-    ]
-    if any(term in text for term in english_required):
-        return 0
+    desc=(description or "").lower()
+    text=(t+" "+desc)
+    # Exclude clear Spanish-bilingual roles, not every job mentioning Spanish in unrelated context.
+    spanish_markers=["spanish","español","espanhol","língua espanhola","lingua espanhola"]
+    bilingual_markers=["bilingual","bilingüe","bilíngue","fluent","fluency","native","advanced","required","proficiency","speaking","fluente","fluência","fluencia"]
+    if any(x in t for x in ["bilingual (spanish)","bilingual spanish","spanish-speaking","spanish speaking","customer support specialist, bilingual"]): return 0
+    if any(x in text for x in spanish_markers) and any(x in text for x in bilingual_markers): return 0
+    english_required=["fluent in english","english fluency","fluency in english","native-level english","advanced english required","english is required","english required","professional english proficiency","inglês fluente","ingles fluente","fluência em inglês","fluencia en inglés"]
+    if any(term in text for term in english_required): return 0
     if any(x in t for x in EXCLUDE): return 0
     role_tokens=[x.strip().lower() for x in (roles or "").split(";") if x.strip()]
     skill_tokens=[x.strip().lower() for x in (skills or "").split(";") if len(x.strip())>=4]
-    relevant_terms=["marketplace","e-commerce","ecommerce","social media","customer support","customer service","virtual assistant","content","marketing assistant","assistente","atendimento","suporte","catalog","product listing","community manager","digital marketing","marketing coordinator","administrative assistant","customer experience","product catalog"]
+    relevant_terms=["marketplace","e-commerce","ecommerce","social media","customer support","customer service","virtual assistant","content","marketing assistant","assistente","atendimento","suporte","catalog","product listing","community manager","digital marketing","marketing coordinator","administrative assistant","customer experience","product catalog","e-commerce assistant","ecommerce assistant","marketplace analyst","marketplace assistant","seller support","operations assistant","sales support","customer success","support specialist","content creator","social media assistant","marketing assistant","product data","listing specialist"]
     cv=(resume_text or "").lower()
     cv_terms=["shopee","mercado livre","tiktok shop","shein","temu","amazon","marketplace","e-commerce","ecommerce","social media","instagram","tiktok","canva","excel","catalog","product listing","ads","anúncios","atendimento","customer support","customer service","content","marketing"]
-    if not (any(x in t for x in role_tokens) or any(x in t for x in skill_tokens) or any(x in t for x in relevant_terms) or any(x in cv and x in t for x in cv_terms)):
-        return 0
+    role_match=any(x in text for x in role_tokens)
+    skill_match=any(x in text for x in skill_tokens)
+    relevant_match=any(x in text for x in relevant_terms)
+    cv_match=any(x in cv and x in text for x in cv_terms)
+    if not (role_match or skill_match or relevant_match or cv_match): return 0
     score=15
     for token in role_tokens:
-        if token in t: score=min(100,score+20)
+        if token in text: score=min(100,score+20)
     for token in skill_tokens:
-        if token in t: score=min(100,score+8)
+        if token in text: score=min(100,score+8)
     for token in relevant_terms:
-        if token in t: score=min(100,score+12)
+        if token in text: score=min(100,score+8)
     for token in cv_terms:
-        if token in cv and token in t: score=min(100,score+5)
+        if token in cv and token in text: score=min(100,score+5)
     if any(x in loc for x in ["brazil","brasil","latin america","south america","worldwide","anywhere","global","all countries"]): score=min(100,score+10)
     return min(100,score)
 class StatusUpdate(BaseModel):
