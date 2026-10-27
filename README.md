@@ -1,16 +1,35 @@
 # Vagas IA
 
-Aplicação privada para pesquisar e organizar vagas remotas, com execução sob demanda.
+Painel privado para buscar vagas remotas, pontuar compatibilidade, guardar status e exportar histórico.
 
-## Publicar no Render Free
-1. No Render, selecione **New → Web Service** e conecte este repositório privado.
-2. Selecione o plano **Free** e confirme os comandos definidos em `render.yaml`.
-3. Defina `APP_USER` e `APP_PASSWORD` como variáveis de ambiente fortes e exclusivas.
-4. Publique e teste `/api/health`.
+## O que está implementado
+- Painel protegido por HTTP Basic Auth (APP_USER e APP_PASSWORD).
+- Busca sob demanda em feeds públicos Jobicy e Remotive; cobertura e resultados dependem dessas fontes.
+- Deduplicação por URL e pontuação aproximada por cargo, competências e texto extraído do currículo.
+- Perfil profissional editável e upload de currículo PDF com texto selecionável (até 8 MB).
+- Controle manual de status das vagas e exportação CSV.
+- Workflow agendado pelo GitHub Actions, uma vez por hora entre 08:00 e 17:00 de Brasília, todos os dias, após configurar os secrets.
 
-## Importante
-- O Render Free pode suspender o serviço após inatividade e tem limites mensais.
-- Este MVP usa SQLite em `/tmp`, que é temporário. Não use para guardar dados importantes até configurarmos um banco persistente.
-- A busca consulta feeds públicos Jobicy e Remotive. Resultados, cobertura geográfica e pontuação são aproximados.
-- **Não há envio automático de candidaturas nesta versão.** O agente pesquisa e organiza vagas; a integração de envio será implementada por plataforma, respeitando as regras e os métodos de acesso autorizados. Não contorna CAPTCHAs nem controles antibot.
-- A senha protege as rotas da aplicação por autenticação HTTP Basic.
+## Publicação no Render
+- Build: `pip install -r requirements.txt`
+- Start: `uvicorn app:app --host 0.0.0.0 --port $PORT`
+- Health: `/api/health`
+
+## Configurar busca programada
+No GitHub, abra Settings → Secrets and variables → Actions → New repository secret e crie:
+- `VAGAS_APP_USER`: o mesmo valor configurado em Render como `APP_USER`
+- `VAGAS_APP_PASSWORD`: o mesmo valor configurado em Render como `APP_PASSWORD`
+- `VAGAS_SERVICE_URL`: `https://vagas-ia-agent.onrender.com`
+
+Depois, abra Actions → “Vagas IA - busca programada” e execute Run workflow para testar. O workflow roda automaticamente entre 08h e 17h (horário de Brasília), todos os dias. O serviço gratuito do Render pode dormir; a primeira requisição pode demorar.
+
+## Persistência: obrigatório antes de confiar nos dados
+Por padrão, sem `DATABASE_URL`, o app usa SQLite em `/tmp/vagas_ia.db`, que é temporário no Render Free. Para manter perfil, currículo e histórico após reinicializações, crie um banco PostgreSQL gerenciado e defina a variável `DATABASE_URL` no Render com a URL de conexão fornecida pelo provedor. A aplicação aceita URLs `postgresql://` e `postgres://` e usa TLS. Faça isso antes de carregar o currículo real ou acumular candidaturas. O banco não é provisionado automaticamente por este repositório.
+
+## Limitações importantes
+- A busca programada só fica ativa depois de configurar os três secrets do GitHub Actions.
+- O currículo PDF é extraído para texto; PDFs escaneados sem texto selecionável não são processados.
+- A pontuação é uma heurística, não uma garantia de adequação. Confira localização permitida, idioma, senioridade, salário e data de publicação no anúncio.
+- **Não existe envio automático de candidatura nesta versão.** O sistema ainda não tem conectores de candidatura por plataforma nem confirmação automática de envio. Não contorna CAPTCHAs, login, filas ou proteções anti-bot.
+- Para automatizar candidaturas de verdade, implementar integrações específicas autorizadas para cada plataforma, testar uma a uma e manter registro somente após confirmação verificável.
+- Nunca publique currículo, senha, tokens ou banco de dados em repositório público.
