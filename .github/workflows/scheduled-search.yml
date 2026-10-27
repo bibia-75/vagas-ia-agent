@@ -1,0 +1,27 @@
+name: Vagas IA - busca programada
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 08:00-17:00 no horário de Brasília (UTC-3), todos os dias.
+    - cron: "0 11-20 * * *"
+
+jobs:
+  search:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Buscar vagas remotas compatíveis
+        env:
+          APP_USER: ${{ secrets.VAGAS_APP_USER }}
+          APP_PASSWORD: ${{ secrets.VAGAS_APP_PASSWORD }}
+          SERVICE_URL: ${{ secrets.VAGAS_SERVICE_URL }}
+        run: |
+          set -eu
+          if [ -z "$APP_USER" ] || [ -z "$APP_PASSWORD" ] || [ -z "$SERVICE_URL" ]; then
+            echo "Configure VAGAS_APP_USER, VAGAS_APP_PASSWORD e VAGAS_SERVICE_URL nos Actions secrets."
+            exit 1
+          fi
+          curl --fail --silent --show-error --max-time 120 \
+            --user "$APP_USER:$APP_PASSWORD" \
+            --request POST "$SERVICE_URL/api/search?limit=50"
