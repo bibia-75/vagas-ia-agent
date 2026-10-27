@@ -33,3 +33,10 @@ Por padrão, sem `DATABASE_URL`, o app usa SQLite em `/tmp/vagas_ia.db`, que é 
 - **Não existe envio automático de candidatura nesta versão.** O sistema ainda não tem conectores de candidatura por plataforma nem confirmação automática de envio. Não contorna CAPTCHAs, login, filas ou proteções anti-bot.
 - Para automatizar candidaturas de verdade, implementar integrações específicas autorizadas para cada plataforma, testar uma a uma e manter registro somente após confirmação verificável.
 - Nunca publique currículo, senha, tokens ou banco de dados em repositório público.
+
+## Análise de compatibilidade e currículo personalizado
+- Cada vaga listada tem uma ação para analisar termos em comum, possíveis lacunas e alertas literais de idioma a partir da descrição armazenada.
+- A análise é heurística e não prova que a pessoa tem ou não tem uma competência. Pode ser limitada se a fonte não fornecer a descrição integral.
+- O botão de currículo gera um arquivo DOCX reorganizando apenas texto já presente no currículo original e informa os termos do anúncio usados como direcionamento. Revise o arquivo antes de enviar.
+- O documento personalizado não inventa experiência, formação, idiomas ou resultados. Ele não substitui uma revisão humana.
+- Ainda não existe envio automático de candidaturas. O próximo estágio exige selecionar uma plataforma de recrutamento com API/fluxo de candidatura autorizado e testar com credenciais permitidas, sem contornar CAPTCHA ou outras proteções.
