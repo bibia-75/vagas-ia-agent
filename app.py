@@ -6,7 +6,7 @@ from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File
 from fastapi.responses import HTMLResponse, Response
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, Field
-from sqlalchemy import create_engine, String, Text, Integer, DateTime, select, UniqueConstraint
+from sqlalchemy import create_engine, String, Text, Integer, DateTime, select, inspect
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 from pypdf import PdfReader
 
@@ -53,6 +53,14 @@ class Job(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda:datetime.now(timezone.utc))
 
 Base.metadata.create_all(engine)
+# Upgrade older SQLite deployments in place when the ephemeral database survives a redeploy.
+if engine.dialect.name == "sqlite":
+    existing = {col["name"] for col in inspect(engine).get_columns("profile")}
+    with engine.begin() as conn:
+        if "resume_text" not in existing:
+            conn.exec_driver_sql("ALTER TABLE profile ADD COLUMN resume_text TEXT NOT NULL DEFAULT ''")
+        if "resume_filename" not in existing:
+            conn.exec_driver_sql("ALTER TABLE profile ADD COLUMN resume_filename VARCHAR(255) NOT NULL DEFAULT ''")
 with Session() as db:
     if db.get(Profile, 1) is None:
         db.add(Profile(id=1))
