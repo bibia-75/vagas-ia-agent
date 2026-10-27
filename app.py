@@ -49,7 +49,7 @@ def db():
     con.commit()
     return con
 
-def score_job(title, location):
+def score_job(title, location, roles="", skills=""):
     t = (title or "").lower()
     loc = (location or "").lower()
     if any(x in t for x in EXCLUDE):
@@ -145,7 +145,7 @@ async def search_jobs(user: str = Depends(require_auth), limit: int = 50):
     for j in found:
         url = j.get("url")
         if not url: continue
-        score = score_job(j["title"], j["location"])
+        score = score_job(j["title"], j["location"], roles, skills)
         if score == 0: continue
         try:
             con.execute("INSERT INTO jobs(url,title,company,location,source,score,status,created_at) VALUES(?,?,?,?,?,?,?,?)",
@@ -157,7 +157,7 @@ async def search_jobs(user: str = Depends(require_auth), limit: int = 50):
     # Re-score existing records and keep low-fit roles out of the dashboard.
     rows = con.execute("SELECT id,title,location FROM jobs").fetchall()
     for row in rows:
-        con.execute("UPDATE jobs SET score=? WHERE id=?", (score_job(row["title"],row["location"]),row["id"]))
+        con.execute("UPDATE jobs SET score=? WHERE id=?", (score_job(row["title"],row["location"],roles,skills),row["id"]))
     con.commit()
     total = con.execute("SELECT COUNT(*) FROM jobs WHERE score>0").fetchone()[0]
     con.close()
