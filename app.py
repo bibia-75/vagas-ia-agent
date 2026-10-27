@@ -48,6 +48,7 @@ class Job(Base):
     company: Mapped[str] = mapped_column(String(300), default="")
     location: Mapped[str] = mapped_column(String(500), default="")
     source: Mapped[str] = mapped_column(String(100), default="")
+    description: Mapped[str] = mapped_column(Text, default="")
     score: Mapped[int] = mapped_column(Integer, default=0)
     status: Mapped[str] = mapped_column(String(60), default="Encontrada")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda:datetime.now(timezone.utc))
@@ -55,6 +56,10 @@ class Job(Base):
 Base.metadata.create_all(engine)
 # Upgrade older SQLite deployments in place when the ephemeral database survives a redeploy.
 if engine.dialect.name == "sqlite":
+    existing_jobs = {col["name"] for col in inspect(engine).get_columns("jobs")}
+    with engine.begin() as conn:
+        if "description" not in existing_jobs:
+            conn.exec_driver_sql("ALTER TABLE jobs ADD COLUMN description TEXT NOT NULL DEFAULT ''")
     existing = {col["name"] for col in inspect(engine).get_columns("profile")}
     with engine.begin() as conn:
         if "resume_text" not in existing:
@@ -78,8 +83,18 @@ def profile_dict(p):
     return {"full_name":p.full_name,"target_roles":p.target_roles,"target_salary":p.target_salary,"locations":p.locations,"skills":p.skills,"resume_filename":p.resume_filename,"resume_text_length":len(p.resume_text or ""),"updated_at":p.updated_at.isoformat() if p.updated_at else None}
 
 EXCLUDE = ["senior data analyst","data analyst","data scientist","software engineer","senior developer","principal engineer","account executive","financial analyst","accountant","nurse","medical doctor"]
-def score_job(title, location, roles="", skills="", resume_text=""):
+def score_job(title, location, roles="", skills="", resume_text="", description=""):
     t=(title or "").lower(); loc=(location or "").lower()
+    text=(t+" "+(description or "")).lower()
+    language_blocklist=[
+        "fluent in spanish","spanish fluency","fluency in spanish","native spanish",
+        "native-level spanish","advanced spanish","spanish is required","spanish required",
+        "bilingual in spanish","bilingual spanish","professional spanish proficiency",
+        "fluent in english","english fluency","fluency in english","native-level english",
+        "advanced english required","english is required","english required","bilingual english"
+    ]
+    if any(term in text for term in language_blocklist):
+        return 0
     if any(x in t for x in EXCLUDE): return 0
     role_tokens=[x.strip().lower() for x in (roles or "").split(";") if x.strip()]
     skill_tokens=[x.strip().lower() for x in (skills or "").split(";") if len(x.strip())>=4]
@@ -156,27 +171,27 @@ async def search_jobs(user: str = Depends(require_auth), limit: int = 50):
         try:
             r=await client.get("https://jobicy.com/api/v2/remote-jobs",params={"count":limit,"geo":"brazil"}); r.raise_for_status()
             for j in r.json().get("jobs",[]):
-                found.append({"url":j.get("url"),"title":j.get("jobTitle") or "Vaga sem título","company":j.get("companyName") or "Empresa não informada","location":j.get("jobGeo") or "Remoto","source":"Jobicy"})
+                found.append({"url":j.get("url"),"title":j.get("jobTitle") or "Vaga sem título","company":j.get("companyName") or "Empresa não informada","location":j.get("jobGeo") or "Remoto","source":"Jobicy","description":j.get("jobDescription") or j.get("jobExcerpt") or ""})
         except Exception as e: errors.append("Jobicy: "+str(e)[:120])
         try:
             r=await client.get("https://remotive.com/api/remote-jobs",params={"limit":limit}); r.raise_for_status()
             for j in r.json().get("jobs",[]):
                 loc=j.get("candidate_required_location") or ""
                 if any(x in loc.lower() for x in ["worldwide","anywhere","brazil","brasil","south america","latin america","all countries","global"]):
-                    found.append({"url":j.get("url"),"title":j.get("title") or "Vaga sem título","company":j.get("company_name") or "Empresa não informada","location":loc or "Remoto","source":"Remotive"})
+                    found.append({"url":j.get("url"),"title":j.get("title") or "Vaga sem título","company":j.get("company_name") or "Empresa não informada","location":loc or "Remoto","source":"Remotive","description":j.get("description") or ""})
         except Exception as e: errors.append("Remotive: "+str(e)[:120])
     inserted=0
     with Session() as db:
         p=db.get(Profile,1)
         for j in found:
             if not j.get("url"): continue
-            score=score_job(j["title"],j["location"],p.target_roles,p.skills,p.resume_text)
+            score=score_job(j["title"],j["location"],p.target_roles,p.skills,p.resume_text,j.get("description",""))
             if score<=0: continue
             old=db.scalar(select(Job).where(Job.url==j["url"]))
             if old:
-                old.title=j["title"]; old.company=j["company"]; old.location=j["location"]; old.source=j["source"]; old.score=score
+                old.title=j["title"]; old.company=j["company"]; old.location=j["location"]; old.source=j["source"]; old.description=j.get("description",""); old.score=score
             else:
-                db.add(Job(url=j["url"],title=j["title"],company=j["company"],location=j["location"],source=j["source"],score=score,status="Encontrada")); inserted+=1
+                db.add(Job(url=j["url"],title=j["title"],company=j["company"],location=j["location"],source=j["source"],description=j.get("description",""),score=score,status="Encontrada")); inserted+=1
         db.commit()
         total=db.scalar(select(Job).where(Job.score>0).with_only_columns(Job.id).order_by(None).subquery().select()) if False else len(db.scalars(select(Job.id).where(Job.score>0)).all())
     return {"new":inserted,"total":total,"checked":len(found),"errors":errors}
