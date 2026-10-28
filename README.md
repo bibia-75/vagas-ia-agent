@@ -6,7 +6,9 @@ Painel privado para buscar vagas remotas, pontuar compatibilidade, guardar statu
 - Painel protegido por HTTP Basic Auth (APP_USER e APP_PASSWORD).
 - Busca sob demanda em feeds públicos Jobicy e Remotive; cobertura e resultados dependem dessas fontes.
 - Deduplicação por URL e pontuação aproximada por cargo, competências e texto extraído do currículo.
-- Perfil profissional editável e upload de currículo PDF com texto selecionável (até 8 MB).
+- Perfil profissional editável, preferências de candidatura (remoto Brasil, salário mínimo, vínculo e inglês) e upload de currículo PDF com texto selecionável (até 8 MB).
+- Onboarding com checklist de informações básicas pendentes.
+- Respostas livres salvas por pergunta normalizada para reutilização futura quando a pergunta for equivalente.
 - Controle manual de status das vagas e exportação CSV.
 - Workflow agendado pelo GitHub Actions, uma vez por hora entre 08:00 e 17:00 de Brasília, todos os dias, após configurar os secrets.
 
@@ -30,6 +32,7 @@ Por padrão, sem `DATABASE_URL`, o app usa SQLite em `/tmp/vagas_ia.db`, que é 
 - A busca programada só fica ativa depois de configurar os três secrets do GitHub Actions.
 - O currículo PDF é extraído para texto; PDFs escaneados sem texto selecionável não são processados.
 - A pontuação é uma heurística, não uma garantia de adequação. Confira localização permitida, idioma, senioridade, salário e data de publicação no anúncio.
+- O onboarding e o armazenamento de respostas estão implementados no código, mas a publicação no Render precisa ser verificada após o deploy.
 - **Não existe envio automático de candidatura nesta versão.** O sistema ainda não tem conectores de candidatura por plataforma nem confirmação automática de envio. Não contorna CAPTCHAs, login, filas ou proteções anti-bot.
 - Para automatizar candidaturas de verdade, implementar integrações específicas autorizadas para cada plataforma, testar uma a uma e manter registro somente após confirmação verificável.
 - Nunca publique currículo, senha, tokens ou banco de dados em repositório público.
