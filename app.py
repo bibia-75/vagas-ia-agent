@@ -47,6 +47,16 @@ class Profile(Base):
     resume_filename: Mapped[str] = mapped_column(String(255), default="")
     resume_mime: Mapped[str] = mapped_column(String(100), default="application/pdf")
     resume_pdf: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    email: Mapped[str] = mapped_column(String(255), default="")
+    phone: Mapped[str] = mapped_column(String(80), default="")
+    city: Mapped[str] = mapped_column(String(120), default="")
+    education: Mapped[str] = mapped_column(String(300), default="")
+    experience_summary: Mapped[str] = mapped_column(Text, default="")
+    linkedin_url: Mapped[str] = mapped_column(String(500), default="")
+    portfolio_url: Mapped[str] = mapped_column(String(500), default="")
+    contract_type: Mapped[str] = mapped_column(String(80), default="CLT ou PJ")
+    english_level: Mapped[str] = mapped_column(String(80), default="Básico")
+    application_policy: Mapped[str] = mapped_column(String(100), default="Automáticas quando permitidas e dados completos")
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda:datetime.now(timezone.utc))
 
 class Job(Base):
@@ -79,10 +89,23 @@ if engine.dialect.name == "sqlite":
             conn.exec_driver_sql("ALTER TABLE profile ADD COLUMN resume_mime VARCHAR(100) NOT NULL DEFAULT 'application/pdf'")
         if "resume_pdf" not in existing:
             conn.exec_driver_sql("ALTER TABLE profile ADD COLUMN resume_pdf BLOB")
+        additions = {"email":"VARCHAR(255) NOT NULL DEFAULT ''","phone":"VARCHAR(80) NOT NULL DEFAULT ''","city":"VARCHAR(120) NOT NULL DEFAULT ''","education":"VARCHAR(300) NOT NULL DEFAULT ''","experience_summary":"TEXT NOT NULL DEFAULT ''","linkedin_url":"VARCHAR(500) NOT NULL DEFAULT ''","portfolio_url":"VARCHAR(500) NOT NULL DEFAULT ''","contract_type":"VARCHAR(80) NOT NULL DEFAULT 'CLT ou PJ'","english_level":"VARCHAR(80) NOT NULL DEFAULT 'Básico'","application_policy":"VARCHAR(100) NOT NULL DEFAULT 'Automáticas quando permitidas e dados completos'"}
+        for column, definition in additions.items():
+            if column not in existing: conn.exec_driver_sql(f"ALTER TABLE profile ADD COLUMN {column} {definition}")
 if engine.dialect.name == "postgresql":
     with engine.begin() as conn:
         conn.exec_driver_sql("ALTER TABLE profile ADD COLUMN IF NOT EXISTS resume_pdf BYTEA")
         conn.exec_driver_sql("ALTER TABLE profile ADD COLUMN IF NOT EXISTS resume_mime VARCHAR(100) NOT NULL DEFAULT 'application/pdf'")
+        conn.exec_driver_sql("ALTER TABLE profile ADD COLUMN IF NOT EXISTS email VARCHAR(255) NOT NULL DEFAULT ''")
+        conn.exec_driver_sql("ALTER TABLE profile ADD COLUMN IF NOT EXISTS phone VARCHAR(80) NOT NULL DEFAULT ''")
+        conn.exec_driver_sql("ALTER TABLE profile ADD COLUMN IF NOT EXISTS city VARCHAR(120) NOT NULL DEFAULT ''")
+        conn.exec_driver_sql("ALTER TABLE profile ADD COLUMN IF NOT EXISTS education VARCHAR(300) NOT NULL DEFAULT ''")
+        conn.exec_driver_sql("ALTER TABLE profile ADD COLUMN IF NOT EXISTS experience_summary TEXT NOT NULL DEFAULT ''")
+        conn.exec_driver_sql("ALTER TABLE profile ADD COLUMN IF NOT EXISTS linkedin_url VARCHAR(500) NOT NULL DEFAULT ''")
+        conn.exec_driver_sql("ALTER TABLE profile ADD COLUMN IF NOT EXISTS portfolio_url VARCHAR(500) NOT NULL DEFAULT ''")
+        conn.exec_driver_sql("ALTER TABLE profile ADD COLUMN IF NOT EXISTS contract_type VARCHAR(80) NOT NULL DEFAULT 'CLT ou PJ'")
+        conn.exec_driver_sql("ALTER TABLE profile ADD COLUMN IF NOT EXISTS english_level VARCHAR(80) NOT NULL DEFAULT 'Básico'")
+        conn.exec_driver_sql("ALTER TABLE profile ADD COLUMN IF NOT EXISTS application_policy VARCHAR(100) NOT NULL DEFAULT 'Automáticas quando permitidas e dados completos'")
 
 with Session() as db:
     if db.get(Profile, 1) is None:
@@ -98,7 +121,7 @@ def require_auth(credentials: HTTPBasicCredentials = Depends(security)):
     return credentials.username
 
 def profile_dict(p):
-    return {"full_name":p.full_name,"target_roles":p.target_roles,"target_salary":p.target_salary,"locations":p.locations,"skills":p.skills,"resume_filename":p.resume_filename,"resume_text_length":len(p.resume_text or ""),"updated_at":p.updated_at.isoformat() if p.updated_at else None}
+    return {"full_name":p.full_name,"target_roles":p.target_roles,"target_salary":p.target_salary,"locations":p.locations,"skills":p.skills,"email":p.email,"phone":p.phone,"city":p.city,"education":p.education,"experience_summary":p.experience_summary,"linkedin_url":p.linkedin_url,"portfolio_url":p.portfolio_url,"contract_type":p.contract_type,"english_level":p.english_level,"application_policy":p.application_policy,"resume_filename":p.resume_filename,"resume_text_length":len(p.resume_text or ""),"updated_at":p.updated_at.isoformat() if p.updated_at else None}
 
 EXCLUDE = ["senior data analyst","data analyst","data scientist","software engineer","senior developer","principal engineer","account executive","financial analyst","accountant","nurse","medical doctor"]
 
@@ -151,9 +174,19 @@ class StatusUpdate(BaseModel):
 class ProfileUpdate(BaseModel):
     full_name: str = Field(default="", max_length=120)
     target_roles: str = Field(default="", max_length=500)
-    target_salary: str = Field(default="R$ 2.500+", max_length=100)
-    locations: str = Field(default="Remoto; Brasil", max_length=300)
+    target_salary: str = Field(default="A partir de R$ 3.500", max_length=100)
+    locations: str = Field(default="Remoto; qualquer lugar do Brasil", max_length=300)
     skills: str = Field(default="", max_length=4000)
+    email: str = Field(default="", max_length=255)
+    phone: str = Field(default="", max_length=80)
+    city: str = Field(default="", max_length=120)
+    education: str = Field(default="", max_length=300)
+    experience_summary: str = Field(default="", max_length=6000)
+    linkedin_url: str = Field(default="", max_length=500)
+    portfolio_url: str = Field(default="", max_length=500)
+    contract_type: str = Field(default="CLT ou PJ", max_length=80)
+    english_level: str = Field(default="Básico", max_length=80)
+    application_policy: str = Field(default="Automáticas quando permitidas e dados completos", max_length=100)
 
 @app.get("/", response_class=HTMLResponse)
 def home(user: str = Depends(require_auth)):
