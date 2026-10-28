@@ -78,6 +78,11 @@ if engine.dialect.name == "sqlite":
             conn.exec_driver_sql("ALTER TABLE profile ADD COLUMN resume_mime VARCHAR(100) NOT NULL DEFAULT 'application/pdf'")
         if "resume_pdf" not in existing:
             conn.exec_driver_sql("ALTER TABLE profile ADD COLUMN resume_pdf BLOB")
+if engine.dialect.name == "postgresql":
+    with engine.begin() as conn:
+        conn.exec_driver_sql("ALTER TABLE profile ADD COLUMN IF NOT EXISTS resume_pdf BYTEA")
+        conn.exec_driver_sql("ALTER TABLE profile ADD COLUMN IF NOT EXISTS resume_mime VARCHAR(100) NOT NULL DEFAULT 'application/pdf'")
+
 with Session() as db:
     if db.get(Profile, 1) is None:
         db.add(Profile(id=1))
