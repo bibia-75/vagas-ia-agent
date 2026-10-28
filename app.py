@@ -6,10 +6,15 @@ from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File
 from fastapi.responses import HTMLResponse, Response
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, Field
-from sqlalchemy import create_engine, String, Text, Integer, DateTime, select, inspect
+from sqlalchemy import create_engine, String, Text, Integer, DateTime, LargeBinary, select, inspect
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 from pypdf import PdfReader
 from docx import Document
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.enums import TA_CENTER
+from reportlab.lib import colors
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
 
 app = FastAPI(title="Vagas IA")
 security = HTTPBasic()
@@ -40,6 +45,7 @@ class Profile(Base):
     resume_text: Mapped[str] = mapped_column(Text, default="")
     resume_filename: Mapped[str] = mapped_column(String(255), default="")
     resume_mime: Mapped[str] = mapped_column(String(100), default="application/pdf")
+    resume_pdf: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda:datetime.now(timezone.utc))
 
 class Job(Base):
@@ -70,6 +76,8 @@ if engine.dialect.name == "sqlite":
             conn.exec_driver_sql("ALTER TABLE profile ADD COLUMN resume_filename VARCHAR(255) NOT NULL DEFAULT ''")
         if "resume_mime" not in existing:
             conn.exec_driver_sql("ALTER TABLE profile ADD COLUMN resume_mime VARCHAR(100) NOT NULL DEFAULT 'application/pdf'")
+        if "resume_pdf" not in existing:
+            conn.exec_driver_sql("ALTER TABLE profile ADD COLUMN resume_pdf BLOB")
 with Session() as db:
     if db.get(Profile, 1) is None:
         db.add(Profile(id=1))
@@ -161,7 +169,7 @@ async def upload_resume(file: UploadFile = File(...), user: str = Depends(requir
     except Exception: raise HTTPException(400,"Não consegui ler esse PDF. Tente exportar o currículo novamente em PDF.")
     if not text: raise HTTPException(400,"O PDF parece ser uma imagem sem texto selecionável. Envie um PDF com texto.")
     with Session() as db:
-        p=db.get(Profile,1); p.resume_text=text[:60000]; p.resume_filename=file.filename[:255]; p.updated_at=datetime.now(timezone.utc); db.commit()
+        p=db.get(Profile,1); p.resume_text=text[:60000]; p.resume_filename=file.filename[:255]; p.resume_mime="application/pdf"; p.resume_pdf=data; p.updated_at=datetime.now(timezone.utc); db.commit()
     return {"ok":True,"filename":file.filename,"characters_extracted":len(text),"message":"Currículo lido e salvo no banco configurado."}
 
 
@@ -207,25 +215,45 @@ def tailor_resume_text(profile, job):
         out.extend(lines)
         out.append("")
     out += ["Nota de integridade","Documento reorganizado a partir do currículo original. Revise o conteúdo antes de enviar; nenhuma experiência ou qualificação nova foi criada."]
-    return "\\n".join(out)
+    return "\n".join(out)
 
 @app.post("/api/jobs/{job_id}/tailor")
 def tailor_resume(job_id:int, user:str=Depends(require_auth), format:str="docx"):
-    if format not in {"docx","txt"}: raise HTTPException(400,"Formato deve ser docx ou txt.")
+    if format not in {"docx","pdf","txt"}: raise HTTPException(400,"Formato deve ser docx, pdf ou txt.")
     with Session() as db:
         job=db.get(Job,job_id); profile=db.get(Profile,1)
         if not job: raise HTTPException(404,"Vaga não encontrada")
         text=tailor_resume_text(profile,job)
+    filename=f"curriculo_personalizado_vaga_{job_id}"
     if format=="txt":
-        return Response(content=text,media_type="text/plain; charset=utf-8",headers={"Content-Disposition":f'attachment; filename="curriculo_vaga_{job_id}.txt"'})
+        return Response(content=text,media_type="text/plain; charset=utf-8",headers={"Content-Disposition":f'attachment; filename="{filename}.txt"'})
+    if format=="pdf":
+        stream=io.BytesIO()
+        styles=getSampleStyleSheet()
+        styles.add(ParagraphStyle(name="CVName",parent=styles["Title"],fontName="Helvetica-Bold",fontSize=17,leading=21,textColor=colors.HexColor("#4C3933"),alignment=TA_CENTER,spaceAfter=8))
+        styles.add(ParagraphStyle(name="CVHeading",parent=styles["Heading2"],fontName="Helvetica-Bold",fontSize=11,leading=14,textColor=colors.HexColor("#4C3933"),spaceBefore=8,spaceAfter=4))
+        styles.add(ParagraphStyle(name="CVBody",parent=styles["BodyText"],fontName="Helvetica",fontSize=9,leading=12,spaceAfter=3))
+        pdf=SimpleDocTemplate(stream,pagesize=A4,rightMargin=48,leftMargin=48,topMargin=42,bottomMargin=42,title=f"Currículo direcionado - {job.title}")
+        story=[]
+        heading_names={"resumo do currículo","experiência profissional","experiencia profissional","experiência","experiencia","formação acadêmica","formacao academica","educação","educacao","competências","competencias","habilidades","cursos","idiomas","resumo profissional","objetivo","nota de integridade"}
+        for idx,line in enumerate(text.splitlines()):
+            line=line.strip()
+            if not line:
+                story.append(Spacer(1,4)); continue
+            safe=line.replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
+            if idx==0: story.append(Paragraph(safe,styles["CVName"]))
+            elif line.lower().strip(" :") in heading_names: story.append(Paragraph(safe,styles["CVHeading"]))
+            else: story.append(Paragraph(safe,styles["CVBody"]))
+        pdf.build(story)
+        return Response(content=stream.getvalue(),media_type="application/pdf",headers={"Content-Disposition":f'attachment; filename="{filename}.pdf"'})
     doc=Document()
     for line in text.splitlines():
-        if line.strip() and line.strip() in {"Resumo do currículo","Experiência profissional","Experiencia profissional","Experiência","Experiencia","Formação acadêmica","Formacao academica","Educação","Educacao","Competências","Competencias","Habilidades","Cursos","Idiomas","Resumo profissional","Objetivo","Nota de integridade"}:
+        if line.strip() and line.strip().lower().strip(" :") in {"resumo do currículo","experiência profissional","experiencia profissional","experiência","experiencia","formação acadêmica","formacao academica","educação","educacao","competências","competencias","habilidades","cursos","idiomas","resumo profissional","objetivo","nota de integridade"}:
             doc.add_heading(line.strip(),level=2)
         elif line.strip():
             doc.add_paragraph(line.strip())
     stream=io.BytesIO(); doc.save(stream)
-    return Response(content=stream.getvalue(),media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",headers={"Content-Disposition":f'attachment; filename="curriculo_vaga_{job_id}.docx"'})
+    return Response(content=stream.getvalue(),media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",headers={"Content-Disposition":f'attachment; filename="{filename}.docx"'})
 
 @app.get("/api/jobs/{job_id}/analysis")
 def analyze_job(job_id:int,user:str=Depends(require_auth)):
