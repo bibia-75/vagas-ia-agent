@@ -15,6 +15,7 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.enums import TA_CENTER
 from reportlab.lib import colors
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+from langdetect import detect, LangDetectException
 
 app = FastAPI(title="Vagas IA")
 security = HTTPBasic()
@@ -102,17 +103,14 @@ def profile_dict(p):
 EXCLUDE = ["senior data analyst","data analyst","data scientist","software engineer","senior developer","principal engineer","account executive","financial analyst","accountant","nurse","medical doctor"]
 
 def is_portuguese_listing(title, description):
-    """Keep listings whose actual text is in Portuguese; reject English-only listings."""
-    sample = ((title or "") + " " + (description or ""))[:12000].lower()
-    if not sample.strip():
+    """Strictly accept jobs whose description language is Portuguese."""
+    sample = " ".join((description or "").split())
+    if len(sample) < 80:
         return False
-    pt_terms = [" para ", " com ", " você ", " sua ", " seu ", " uma ", " das ", " dos ", " que ", " não ", " vaga ", " vagas ", " empresa ", " experiência ", " requisitos ", " habilidades ", " salário ", " candidatura ", " benefícios ", " trabalho ", " remoto ", " responsabilidades ", " conhecimento ", " necessário ", " desejável ", " atividades ", " contratação ", " horário ", " oportunidade ", " português ", " equipe "]
-    en_terms = [" the ", " and ", " with ", " you ", " your ", " our ", " for ", " this ", " that ", " job ", " role ", " experience ", " requirements ", " qualifications ", " responsibilities ", " benefits ", " salary ", " apply ", " remote ", " hiring ", " team ", " skills ", " candidate ", " applicants ", " employment ", " position ", " preferred ", " must have ", " fluent in "]
-    padded = " " + sample.replace("\\n", " ").replace("\\t", " ") + " "
-    pt = sum(padded.count(term) for term in pt_terms)
-    en = sum(padded.count(term) for term in en_terms)
-    # Require real Portuguese evidence and reject listings dominated by English.
-    return pt >= 2 and pt >= en
+    try:
+        return detect(sample[:12000]) == "pt"
+    except LangDetectException:
+        return False
 
 def score_job(title, location, roles="", skills="", resume_text="", description=""):
     t=(title or "").lower(); loc=(location or "").lower()
@@ -341,7 +339,7 @@ async def search_jobs(user: str = Depends(require_auth), limit: int = 50):
 
 @app.patch("/api/jobs/{job_id}")
 def update_job(job_id:int,payload:StatusUpdate,user:str=Depends(require_auth)):
-    allowed={"Encontrada","Prioritária","Pronta para candidatura","Candidatura confirmada","Entrevista","Recusada","Encerrada","Erro de envio"}
+    allowed={"Encontrada","Prioritária","Pronta para candidatura","Candidatura em andamento","Candidatura confirmada","Entrevista","Recusada","Encerrada","Erro de envio"}
     if payload.status not in allowed: raise HTTPException(400,"Status inválido")
     with Session() as db:
         j=db.get(Job,job_id)
