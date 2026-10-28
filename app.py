@@ -100,9 +100,24 @@ def profile_dict(p):
     return {"full_name":p.full_name,"target_roles":p.target_roles,"target_salary":p.target_salary,"locations":p.locations,"skills":p.skills,"resume_filename":p.resume_filename,"resume_text_length":len(p.resume_text or ""),"updated_at":p.updated_at.isoformat() if p.updated_at else None}
 
 EXCLUDE = ["senior data analyst","data analyst","data scientist","software engineer","senior developer","principal engineer","account executive","financial analyst","accountant","nurse","medical doctor"]
+
+def is_portuguese_listing(title, description):
+    """Keep listings whose actual text is in Portuguese; reject English-only listings."""
+    sample = ((title or "") + " " + (description or ""))[:12000].lower()
+    if not sample.strip():
+        return False
+    pt_terms = [" para ", " com ", " você ", " sua ", " seu ", " uma ", " das ", " dos ", " que ", " não ", " vaga ", " vagas ", " empresa ", " experiência ", " requisitos ", " habilidades ", " salário ", " candidatura ", " benefícios ", " trabalho ", " remoto ", " responsabilidades ", " conhecimento ", " necessário ", " desejável ", " atividades ", " contratação ", " horário ", " oportunidade ", " português ", " equipe "]
+    en_terms = [" the ", " and ", " with ", " you ", " your ", " our ", " for ", " this ", " that ", " job ", " role ", " experience ", " requirements ", " qualifications ", " responsibilities ", " benefits ", " salary ", " apply ", " remote ", " hiring ", " team ", " skills ", " candidate ", " applicants ", " employment ", " position ", " preferred ", " must have ", " fluent in "]
+    padded = " " + sample.replace("\\n", " ").replace("\\t", " ") + " "
+    pt = sum(padded.count(term) for term in pt_terms)
+    en = sum(padded.count(term) for term in en_terms)
+    # Require real Portuguese evidence and reject listings dominated by English.
+    return pt >= 2 and pt >= en
+
 def score_job(title, location, roles="", skills="", resume_text="", description=""):
     t=(title or "").lower(); loc=(location or "").lower()
     desc=(description or "").lower()
+    if not is_portuguese_listing(title, description): return 0
     text=(t+" "+desc)
     # Exclude clear Spanish-bilingual roles, not every job mentioning Spanish in unrelated context.
     spanish_markers=["spanish","español","espanhol","língua espanhola","lingua espanhola"]
