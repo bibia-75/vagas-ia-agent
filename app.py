@@ -72,6 +72,14 @@ class Job(Base):
     status: Mapped[str] = mapped_column(String(60), default="Encontrada")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda:datetime.now(timezone.utc))
 
+class SavedAnswer(Base):
+    __tablename__ = "saved_answers"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    question_key: Mapped[str] = mapped_column(String(500), unique=True, index=True)
+    question_text: Mapped[str] = mapped_column(String(1000), default="")
+    answer: Mapped[str] = mapped_column(Text, default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda:datetime.now(timezone.utc))
+
 Base.metadata.create_all(engine)
 # Upgrade older SQLite deployments in place when the ephemeral database survives a redeploy.
 if engine.dialect.name == "sqlite":
@@ -187,6 +195,39 @@ class ProfileUpdate(BaseModel):
     contract_type: str = Field(default="CLT ou PJ", max_length=80)
     english_level: str = Field(default="Básico", max_length=80)
     application_policy: str = Field(default="Automáticas quando permitidas e dados completos", max_length=100)
+
+class AnswerPayload(BaseModel):
+    question: str = Field(min_length=3, max_length=1000)
+    answer: str = Field(min_length=1, max_length=6000)
+
+@app.get("/api/onboarding/status")
+def onboarding_status(user: str = Depends(require_auth)):
+    with Session() as db:
+        p=db.get(Profile,1)
+        checks=[("Nome completo",bool((p.full_name or "").strip())),("E-mail",bool((p.email or "").strip())),("Telefone",bool((p.phone or "").strip())),("Cidade/UF",bool((p.city or "").strip())),("Formação",bool((p.education or "").strip())),("Currículo em PDF",bool((p.resume_text or "").strip())),("Experiências profissionais",bool((p.experience_summary or "").strip()))]
+        missing=[label for label,done in checks if not done]
+        return {"ready":len(missing)==0,"completed":len(checks)-len(missing),"total":len(checks),"missing":missing,"checks":[{"label":label,"complete":done} for label,done in checks],"message":"Perfil completo para preparar candidaturas; cada portal ainda pode exigir informações adicionais." if not missing else "Complete os dados abaixo antes de preparar candidaturas."}
+
+@app.get("/api/answers")
+def list_saved_answers(user: str = Depends(require_auth)):
+    with Session() as db:
+        answers=db.scalars(select(SavedAnswer).order_by(SavedAnswer.question_text.asc())).all()
+        return [{"id":a.id,"question":a.question_text,"answer":a.answer,"updated_at":a.updated_at.isoformat() if a.updated_at else None} for a in answers]
+
+@app.post("/api/answers")
+def save_answer(payload: AnswerPayload, user: str = Depends(require_auth)):
+    question=" ".join(payload.question.split()).strip()
+    answer=payload.answer.strip()
+    if not answer: raise HTTPException(400,"A resposta não pode ficar vazia.")
+    key=" ".join(question.casefold().split())
+    with Session() as db:
+        saved=db.scalar(select(SavedAnswer).where(SavedAnswer.question_key==key))
+        if saved:
+            saved.question_text=question; saved.answer=answer; saved.updated_at=datetime.now(timezone.utc)
+        else:
+            saved=SavedAnswer(question_key=key,question_text=question,answer=answer,updated_at=datetime.now(timezone.utc)); db.add(saved)
+        db.commit()
+        return {"ok":True,"message":"Resposta salva para reutilização quando a pergunta for equivalente.","question":saved.question_text}
 
 @app.get("/", response_class=HTMLResponse)
 def home(user: str = Depends(require_auth)):
