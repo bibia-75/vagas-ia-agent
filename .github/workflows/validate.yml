@@ -26,3 +26,5 @@ jobs:
           APP_PASSWORD: ci-owner-password
           APP_SECRET: ci-session-secret-for-tests
         run: python -m unittest discover -s tests -v
+      - name: Test migration of existing user data
+        run: python tests/check_legacy_migration.py
