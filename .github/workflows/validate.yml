@@ -20,3 +20,11 @@ jobs:
           pip install -r requirements.txt
       - name: Check Python syntax
         run: python -m py_compile app.py
+      - name: Test account isolation
+        env:
+          APP_USER: ci-owner
+          APP_PASSWORD: ci-owner-password
+          APP_SECRET: ci-session-secret-for-tests
+        run: python -m unittest discover -s tests -v
+      - name: Test migration of existing user data
+        run: python tests/check_legacy_migration.py
