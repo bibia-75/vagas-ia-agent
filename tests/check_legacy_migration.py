@@ -59,7 +59,7 @@ CREATE TABLE saved_answers (
 );
 CREATE UNIQUE INDEX ix_saved_answers_question_key ON saved_answers(question_key);
 INSERT INTO profile (id, full_name, target_salary, resume_text) VALUES (1, 'Perfil antigo preservado', 'A partir de R$ 3.500', 'Texto de currículo privado');
-INSERT INTO jobs (url, title, company, location, source, description, score) VALUES ('https://example.test/old-job', 'Vaga antiga', 'Empresa antiga', 'Remoto', 'Teste', 'Descrição antiga', 88);
+INSERT INTO jobs (url, title, company, location, source, description, score, created_at) VALUES ('https://example.test/old-job', 'Vaga antiga', 'Empresa antiga', 'Remoto', 'Teste', 'Descrição antiga', 88, CURRENT_TIMESTAMP);
 INSERT INTO saved_answers (question_key, question_text, answer) VALUES ('pergunta antiga', 'Pergunta antiga', 'Resposta antiga');
 """)
 conn.commit()
