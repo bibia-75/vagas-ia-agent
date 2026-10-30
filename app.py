@@ -40,7 +40,7 @@ class Profile(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
     full_name: Mapped[str] = mapped_column(String(120), default="")
     target_roles: Mapped[str] = mapped_column(String(500), default="Marketplace; E-commerce; Social Media; Customer Support; Assistente Virtual")
-    target_salary: Mapped[str] = mapped_column(String(100), default="R$ 2.500+")
+    target_salary: Mapped[str] = mapped_column(String(100), default="A partir de R$ 3.500")
     locations: Mapped[str] = mapped_column(String(300), default="Remoto; Brasil")
     skills: Mapped[str] = mapped_column(Text, default="Shopee; Mercado Livre; TikTok Shop; SHEIN; Temu; Amazon; anúncios; catálogo; Instagram; TikTok; Canva; Excel; atendimento")
     resume_text: Mapped[str] = mapped_column(Text, default="")
