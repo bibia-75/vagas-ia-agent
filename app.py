@@ -217,6 +217,21 @@ def session_user_id(token: str | None):
 
 def require_auth(request: Request):
     user_id=session_user_id(request.cookies.get("vagas_ia_session"))
+    # Keep the existing scheduled GitHub search working, but never allow its
+    # legacy Basic Auth credentials to read profile, CV, jobs, or answers.
+    if user_id is None and request.url.path=="/api/search":
+        header=request.headers.get("authorization","")
+        if header.lower().startswith("basic ") and APP_USER and APP_PASSWORD:
+            try:
+                raw=base64.b64decode(header.split(" ",1)[1]).decode("utf-8")
+                username,password=raw.split(":",1)
+                if secrets.compare_digest(username,APP_USER) and secrets.compare_digest(password,APP_PASSWORD):
+                    with Session() as db:
+                        legacy=db.scalar(select(User).where(User.username==APP_USER))
+                        if legacy is not None:
+                            return SimpleNamespace(id=legacy.id,username=legacy.username,email=legacy.email)
+            except Exception:
+                pass
     if user_id is None:
         raise HTTPException(status_code=401,detail="Faça login para continuar.")
     with Session() as db:
