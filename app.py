@@ -185,9 +185,9 @@ with engine.begin() as conn:
             conn.exec_driver_sql(f"UPDATE {table} SET user_id = {int(legacy_user_id)} WHERE user_id IS NULL")
     conn.exec_driver_sql("CREATE UNIQUE INDEX IF NOT EXISTS ux_profile_user_id ON profile (user_id)")
     conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_jobs_user_id ON jobs (user_id)")
-    conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_jobs_user_url ON jobs (user_id, url)")
+    conn.exec_driver_sql("CREATE UNIQUE INDEX IF NOT EXISTS ux_jobs_user_url ON jobs (user_id, url)")
     conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_saved_answers_user_id ON saved_answers (user_id)")
-    conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_saved_answers_user_question ON saved_answers (user_id, question_key)")
+    conn.exec_driver_sql("CREATE UNIQUE INDEX IF NOT EXISTS ux_saved_answers_user_question ON saved_answers (user_id, question_key)")
 
 with Session() as db:
     unassigned=0
