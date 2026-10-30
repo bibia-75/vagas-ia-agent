@@ -177,7 +177,7 @@ def salary_is_below_minimum(salary, minimum=3500.0):
     return bool(values) and max(values) < minimum
 
 def remote_location_allowed(location, description=""):
-    """Descarta vagas explicitamente híbridas/presenciais ou restritas a outros países."""
+    """Aceita remoto/híbrido; descarta apenas modalidade presencial explícita e restrições incompatíveis."""
     loc=(location or "").lower()
     if any(x in loc for x in ["on-site", "onsite", "on site", "presencial", "in-office", "in office", "no escritório", "no escritorio"]): return False
     text=loc+" "+(description or "")[:1800].lower()
