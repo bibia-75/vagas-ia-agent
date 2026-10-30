@@ -6,10 +6,10 @@ Painel privado para buscar vagas remotas, pontuar compatibilidade, guardar statu
 - Painel protegido por HTTP Basic Auth (APP_USER e APP_PASSWORD).
 - Busca sob demanda em feeds públicos Jobicy e Remotive; cobertura e resultados dependem dessas fontes.
 - Deduplicação por URL e pontuação aproximada por cargo, competências e texto extraído do currículo.
-- Salário mínimo padrão de R$ 3.500: anúncios com faixa salarial mensal explicitamente em reais e totalmente abaixo do limite são filtrados; salários não divulgados permanecem visíveis para conferência. Não há conversão de moedas nem comparação de faixas anuais/por hora com salário mensal.
-- Anúncios explicitamente híbridos/presenciais e restrições geográficas claramente incompatíveis são descartados. Quando a fonte não deixa claro se aceita profissionais no Brasil, o painel exibe um aviso para conferência manual.
+- O salário mínimo é uma preferência configurável no perfil (R$ 3.500 no perfil inicial desta instalação): anúncios com faixa salarial mensal explicitamente em reais e totalmente abaixo do limite informado são filtrados; salários não divulgados permanecem visíveis para conferência. Não há conversão de moedas nem comparação de faixas anuais/por hora com salário mensal.
+- Vagas remotas e híbridas são aceitas; anúncios explicitamente presenciais e restrições geográficas claramente incompatíveis são descartados. Quando a fonte não deixa claro se aceita profissionais no Brasil, o painel exibe um aviso para conferência manual.
 - Salário e vínculo informados pela fonte são exibidos nos resultados e exportados no CSV.
-- Perfil profissional editável, preferências de candidatura (remoto Brasil, salário mínimo, vínculo e inglês) e upload de currículo PDF com texto selecionável (até 8 MB).
+- Perfil profissional editável, preferências de candidatura (modalidade remota/híbrida, localidade, salário mínimo configurável, vínculo e inglês) e upload de currículo PDF com texto selecionável (até 8 MB).
 - Onboarding com checklist de informações básicas pendentes.
 - Respostas livres salvas por pergunta normalizada para reutilização futura quando a pergunta for equivalente.
 - Controle manual de status das vagas e exportação CSV.
