@@ -342,31 +342,31 @@ class AnswerPayload(BaseModel):
     answer: str = Field(min_length=1, max_length=6000)
 
 @app.get("/api/onboarding/status")
-def onboarding_status(user: str = Depends(require_auth)):
+def onboarding_status(user=Depends(require_auth)):
     with Session() as db:
-        p=db.get(Profile,1)
+        p=db.scalar(select(Profile).where(Profile.user_id==user.id))
         checks=[("Nome completo",bool((p.full_name or "").strip())),("E-mail",bool((p.email or "").strip())),("Telefone",bool((p.phone or "").strip())),("Cidade/UF",bool((p.city or "").strip())),("Formação",bool((p.education or "").strip())),("Currículo em PDF",bool((p.resume_text or "").strip())),("Experiências profissionais",bool((p.experience_summary or "").strip()))]
         missing=[label for label,done in checks if not done]
         return {"ready":len(missing)==0,"completed":len(checks)-len(missing),"total":len(checks),"missing":missing,"checks":[{"label":label,"complete":done} for label,done in checks],"message":"Perfil completo para preparar candidaturas; cada portal ainda pode exigir informações adicionais." if not missing else "Complete os dados abaixo antes de preparar candidaturas."}
 
 @app.get("/api/answers")
-def list_saved_answers(user: str = Depends(require_auth)):
+def list_saved_answers(user=Depends(require_auth)):
     with Session() as db:
-        answers=db.scalars(select(SavedAnswer).order_by(SavedAnswer.question_text.asc())).all()
+        answers=db.scalars(select(SavedAnswer).where(SavedAnswer.user_id==user.id).order_by(SavedAnswer.question_text.asc())).all()
         return [{"id":a.id,"question":a.question_text,"answer":a.answer,"updated_at":a.updated_at.isoformat() if a.updated_at else None} for a in answers]
 
 @app.post("/api/answers")
-def save_answer(payload: AnswerPayload, user: str = Depends(require_auth)):
+def save_answer(payload: AnswerPayload, user=Depends(require_auth)):
     question=" ".join(payload.question.split()).strip()
     answer=payload.answer.strip()
     if not answer: raise HTTPException(400,"A resposta não pode ficar vazia.")
     key=" ".join(question.casefold().split())
     with Session() as db:
-        saved=db.scalar(select(SavedAnswer).where(SavedAnswer.question_key==key))
+        saved=db.scalar(select(SavedAnswer).where(SavedAnswer.user_id==user.id,SavedAnswer.question_key==key))
         if saved:
             saved.question_text=question; saved.answer=answer; saved.updated_at=datetime.now(timezone.utc)
         else:
-            saved=SavedAnswer(question_key=key,question_text=question,answer=answer,updated_at=datetime.now(timezone.utc)); db.add(saved)
+            saved=SavedAnswer(user_id=user.id,question_key=key,question_text=question,answer=answer,updated_at=datetime.now(timezone.utc)); db.add(saved)
         db.commit()
         return {"ok":True,"message":"Resposta salva para reutilização quando a pergunta for equivalente.","question":saved.question_text}
 
@@ -421,19 +421,20 @@ def health():
     return {"ok":True,"service":"vagas-ia-agent","persistent_database":bool(DATABASE_URL)}
 
 @app.get("/api/profile")
-def get_profile(user: str = Depends(require_auth)):
-    with Session() as db: return profile_dict(db.get(Profile,1))
+def get_profile(user=Depends(require_auth)):
+    with Session() as db: return profile_dict(db.scalar(select(Profile).where(Profile.user_id==user.id)))
 
 @app.put("/api/profile")
-def save_profile(payload: ProfileUpdate, user: str = Depends(require_auth)):
+def save_profile(payload: ProfileUpdate, user=Depends(require_auth)):
     with Session() as db:
-        p=db.get(Profile,1)
+        p=db.scalar(select(Profile).where(Profile.user_id==user.id))
+        if p is None: raise HTTPException(404,"Perfil não encontrado")
         for key,value in payload.model_dump().items(): setattr(p,key,value.strip())
         p.updated_at=datetime.now(timezone.utc); db.commit()
         return {"ok":True,"message":"Perfil salvo"}
 
 @app.post("/api/profile/resume")
-async def upload_resume(file: UploadFile = File(...), user: str = Depends(require_auth)):
+async def upload_resume(file: UploadFile = File(...), user=Depends(require_auth)):
     if not file.filename or not file.filename.lower().endswith(".pdf"):
         raise HTTPException(400,"Envie seu currículo em PDF.")
     data=await file.read()
@@ -444,7 +445,9 @@ async def upload_resume(file: UploadFile = File(...), user: str = Depends(requir
     except Exception: raise HTTPException(400,"Não consegui ler esse PDF. Tente exportar o currículo novamente em PDF.")
     if not text: raise HTTPException(400,"O PDF parece ser uma imagem sem texto selecionável. Envie um PDF com texto.")
     with Session() as db:
-        p=db.get(Profile,1); p.resume_text=text[:60000]; p.resume_filename=file.filename[:255]; p.resume_mime="application/pdf"; p.resume_pdf=data; p.updated_at=datetime.now(timezone.utc); db.commit()
+        p=db.scalar(select(Profile).where(Profile.user_id==user.id))
+        if p is None: raise HTTPException(404,"Perfil não encontrado")
+        p.resume_text=text[:60000]; p.resume_filename=file.filename[:255]; p.resume_mime="application/pdf"; p.resume_pdf=data; p.updated_at=datetime.now(timezone.utc); db.commit()
     return {"ok":True,"filename":file.filename,"characters_extracted":len(text),"message":"Currículo lido e salvo no banco configurado."}
 
 
@@ -493,11 +496,11 @@ def tailor_resume_text(profile, job):
     return "\n".join(out)
 
 @app.post("/api/jobs/{job_id}/tailor")
-def tailor_resume(job_id:int, user:str=Depends(require_auth), format:str="docx"):
+def tailor_resume(job_id:int, user=Depends(require_auth), format:str="docx"):
     if format not in {"docx","pdf","txt"}: raise HTTPException(400,"Formato deve ser docx, pdf ou txt.")
     with Session() as db:
-        job=db.get(Job,job_id); profile=db.get(Profile,1)
-        if not job: raise HTTPException(404,"Vaga não encontrada")
+        job=db.scalar(select(Job).where(Job.id==job_id,Job.user_id==user.id)); profile=db.scalar(select(Profile).where(Profile.user_id==user.id))
+        if not job or not profile: raise HTTPException(404,"Vaga não encontrada")
         text=tailor_resume_text(profile,job)
     filename=f"curriculo_personalizado_vaga_{job_id}"
     if format=="txt":
@@ -531,7 +534,7 @@ def tailor_resume(job_id:int, user:str=Depends(require_auth), format:str="docx")
     return Response(content=stream.getvalue(),media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",headers={"Content-Disposition":f'attachment; filename="{filename}.docx"'})
 
 @app.get("/api/jobs/{job_id}/analysis")
-def analyze_job(job_id:int,user:str=Depends(require_auth)):
+def analyze_job(job_id:int,user=Depends(require_auth)):
     with Session() as db:
         job=db.get(Job,job_id); profile=db.get(Profile,1)
         if not job: raise HTTPException(404,"Vaga não encontrada")
@@ -543,13 +546,13 @@ def analyze_job(job_id:int,user:str=Depends(require_auth)):
         return {"job_id":job.id,"title":job.title,"company":job.company,"score":job.score,"matched_terms":present,"possible_gaps":missing,"language_warnings":lang_required,"description_available":bool(job.description),"note":"Análise heurística baseada no texto disponível; requisitos ausentes no currículo não provam falta de competência."}
 
 @app.get("/api/jobs")
-def list_jobs(user: str = Depends(require_auth)):
+def list_jobs(user=Depends(require_auth)):
     with Session() as db:
-        jobs=db.scalars(select(Job).where(Job.score>0).order_by(Job.score.desc(),Job.id.desc())).all()
+        jobs=db.scalars(select(Job).where(Job.user_id==user.id,Job.score>0).order_by(Job.score.desc(),Job.id.desc())).all()
         return [dict(id=j.id,url=j.url,title=j.title,company=j.company,location=j.location,source=j.source,salary=j.salary,contract_type=j.contract_type,location_check=location_verification_label(j.location),score=j.score,status=j.status,created_at=j.created_at.isoformat()) for j in jobs]
 
 @app.post("/api/search")
-async def search_jobs(user: str = Depends(require_auth), limit: int = 50):
+async def search_jobs(user=Depends(require_auth), limit: int = 50):
     limit=max(1,min(limit,100)); found=[]; errors=[]
     async with httpx.AsyncClient(timeout=20,follow_redirects=True,headers={"User-Agent":"VagasIA/1.0 job search assistant"}) as client:
         try:
@@ -567,9 +570,10 @@ async def search_jobs(user: str = Depends(require_auth), limit: int = 50):
     inserted=0
     filtered_existing=0
     with Session() as db:
-        p=db.get(Profile,1)
-        # Re-score existing records too, so previously saved jobs that now fail filters disappear.
-        for saved in db.scalars(select(Job)).all():
+        p=db.scalar(select(Profile).where(Profile.user_id==user.id))
+        if p is None: raise HTTPException(404,"Perfil não encontrado")
+        # Re-score only jobs owned by this account.
+        for saved in db.scalars(select(Job).where(Job.user_id==user.id)).all():
             new_score=score_job(saved.title,saved.location,p.target_roles,p.skills,p.resume_text,saved.description)
             if salary_is_below_minimum(saved.salary, minimum_salary_brl(p.target_salary)): new_score=0
             if new_score <= 0 and saved.score > 0:
@@ -581,7 +585,7 @@ async def search_jobs(user: str = Depends(require_auth), limit: int = 50):
             if not j.get("url"): continue
             score=score_job(j["title"],j["location"],p.target_roles,p.skills,p.resume_text,j.get("description",""))
             if salary_is_below_minimum(j.get("salary",""), minimum_salary_brl(p.target_salary)): score=0
-            old=db.scalar(select(Job).where(Job.url==j["url"]))
+            old=db.scalar(select(Job).where(Job.user_id==user.id,Job.url==j["url"]))
             if score<=0:
                 if old and old.score>0:
                     old.score=0
@@ -591,32 +595,32 @@ async def search_jobs(user: str = Depends(require_auth), limit: int = 50):
             if old:
                 old.title=j["title"]; old.company=j["company"]; old.location=j["location"]; old.source=j["source"]; old.description=j.get("description",""); old.salary=j.get("salary",""); old.contract_type=j.get("contract_type",""); old.score=score
             else:
-                db.add(Job(url=j["url"],title=j["title"],company=j["company"],location=j["location"],source=j["source"],description=j.get("description",""),salary=j.get("salary",""),contract_type=j.get("contract_type",""),score=score,status="Encontrada")); inserted+=1
+                db.add(Job(user_id=user.id,url=j["url"],title=j["title"]),company=j["company"],location=j["location"],source=j["source"],description=j.get("description",""),salary=j.get("salary",""),contract_type=j.get("contract_type",""),score=score,status="Encontrada")); inserted+=1
         db.commit()
         total=db.scalar(select(Job).where(Job.score>0).with_only_columns(Job.id).order_by(None).subquery().select()) if False else len(db.scalars(select(Job.id).where(Job.score>0)).all())
     return {"new":inserted,"total":total,"checked":len(found),"filtered_existing":filtered_existing,"errors":errors}
 
 @app.patch("/api/jobs/{job_id}")
-def update_job(job_id:int,payload:StatusUpdate,user:str=Depends(require_auth)):
+def update_job(job_id:int,payload:StatusUpdate,user=Depends(require_auth)):
     allowed={"Encontrada","Prioritária","Pronta para candidatura","Candidatura em andamento","Candidatura confirmada","Entrevista","Recusada","Encerrada","Erro de envio"}
     if payload.status not in allowed: raise HTTPException(400,"Status inválido")
     with Session() as db:
-        j=db.get(Job,job_id)
+        j=db.scalar(select(Job).where(Job.id==job_id,Job.user_id==user.id))
         if not j: raise HTTPException(404,"Vaga não encontrada")
         j.status=payload.status; db.commit()
     return {"ok":True}
 
 @app.get("/api/stats")
-def stats(user:str=Depends(require_auth)):
+def stats(user=Depends(require_auth)):
     with Session() as db:
-        jobs=db.scalars(select(Job)).all()
+        jobs=db.scalars(select(Job).where(Job.user_id==user.id)).all()
         return {"total":sum(1 for j in jobs if j.score>0),"priority":sum(1 for j in jobs if j.score>=50),"applied":sum(1 for j in jobs if j.status=="Candidatura confirmada")}
 
 @app.get("/api/export.csv")
-def export_csv(user:str=Depends(require_auth)):
+def export_csv(user=Depends(require_auth)):
     output=io.StringIO(); writer=csv.writer(output)
     writer.writerow(["Vaga","Empresa","Localização","Salário informado","Vínculo informado","Fonte","Link","Compatibilidade","Status","Encontrada em"])
     with Session() as db:
-        for j in db.scalars(select(Job).order_by(Job.score.desc())).all():
+        for j in db.scalars(select(Job).where(Job.user_id==user.id).order_by(Job.score.desc())).all():
             writer.writerow([j.title,j.company,j.location,j.salary or "Não informado",j.contract_type or "Não informado",j.source,j.url,j.score,j.status,j.created_at.isoformat() if j.created_at else ""])
     return Response(content="\ufeff"+output.getvalue(),media_type="text/csv; charset=utf-8",headers={"Content-Disposition":"attachment; filename=vagas_ia.csv"})
