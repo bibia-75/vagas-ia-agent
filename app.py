@@ -141,6 +141,22 @@ if engine.dialect.name == "postgresql":
         conn.exec_driver_sql("ALTER TABLE profile ADD COLUMN IF NOT EXISTS english_level VARCHAR(80) NOT NULL DEFAULT 'Básico'")
         conn.exec_driver_sql("ALTER TABLE profile ADD COLUMN IF NOT EXISTS application_policy VARCHAR(100) NOT NULL DEFAULT 'Automáticas quando permitidas e dados completos'")
 
+def hash_password(password: str) -> str:
+    salt=secrets.token_bytes(16)
+    digest=hashlib.scrypt(password.encode("utf-8"),salt=salt,n=2**14,r=8,p=1)
+    return "scrypt$"+base64.urlsafe_b64encode(salt).decode()+"$"+base64.urlsafe_b64encode(digest).decode()
+
+def verify_password(password: str, encoded: str) -> bool:
+    try:
+        algorithm,salt_b64,digest_b64=encoded.split("$",2)
+        if algorithm!="scrypt": return False
+        salt=base64.urlsafe_b64decode(salt_b64.encode())
+        expected=base64.urlsafe_b64decode(digest_b64.encode())
+        actual=hashlib.scrypt(password.encode("utf-8"),salt=salt,n=2**14,r=8,p=1)
+        return hmac.compare_digest(actual,expected)
+    except Exception:
+        return False
+
 # Add tenant ownership columns and migrate all existing records to the legacy owner.
 with engine.begin() as conn:
     for table in ("profile","jobs","saved_answers"):
@@ -181,22 +197,6 @@ with Session() as db:
     if legacy_user_id is not None and db.scalar(select(Profile).where(Profile.user_id==legacy_user_id)) is None:
         db.add(Profile(user_id=legacy_user_id))
         db.commit()
-
-def hash_password(password: str) -> str:
-    salt=secrets.token_bytes(16)
-    digest=hashlib.scrypt(password.encode("utf-8"),salt=salt,n=2**14,r=8,p=1)
-    return "scrypt$"+base64.urlsafe_b64encode(salt).decode()+"$"+base64.urlsafe_b64encode(digest).decode()
-
-def verify_password(password: str, encoded: str) -> bool:
-    try:
-        algorithm,salt_b64,digest_b64=encoded.split("$",2)
-        if algorithm!="scrypt": return False
-        salt=base64.urlsafe_b64decode(salt_b64.encode())
-        expected=base64.urlsafe_b64decode(digest_b64.encode())
-        actual=hashlib.scrypt(password.encode("utf-8"),salt=salt,n=2**14,r=8,p=1)
-        return hmac.compare_digest(actual,expected)
-    except Exception:
-        return False
 
 def session_token(user_id: int) -> str:
     expires=int(datetime.now(timezone.utc).timestamp())+SESSION_TTL
@@ -362,8 +362,50 @@ def save_answer(payload: AnswerPayload, user: str = Depends(require_auth)):
         return {"ok":True,"message":"Resposta salva para reutilização quando a pergunta for equivalente.","question":saved.question_text}
 
 @app.get("/", response_class=HTMLResponse)
-def home(user: str = Depends(require_auth)):
+def home():
+    return (BASE / "static" / "login.html").read_text(encoding="utf-8")
+
+@app.get("/app", response_class=HTMLResponse)
+def dashboard(user=Depends(require_auth)):
     return (BASE / "static" / "index.html").read_text(encoding="utf-8")
+
+@app.post("/api/auth/register")
+def register(payload: RegisterPayload, request: Request, response: Response):
+    if not SESSION_SECRET: raise HTTPException(503,"Configure APP_SECRET no Render.")
+    username=payload.username.strip().lower()
+    email=payload.email.strip().lower()
+    if "@" not in email or "." not in email.rsplit("@",1)[-1]:
+        raise HTTPException(400,"Informe um e-mail válido.")
+    with Session() as db:
+        if db.scalar(select(User).where((User.username==username)|(User.email==email))):
+            raise HTTPException(409,"Usuário ou e-mail já cadastrado.")
+        user=User(username=username,email=email,password_hash=hash_password(payload.password))
+        db.add(user); db.flush()
+        db.add(Profile(user_id=user.id))
+        db.commit()
+        uid=user.id
+    response.set_cookie("vagas_ia_session",session_token(uid),max_age=SESSION_TTL,httponly=True,secure=request.url.scheme=="https",samesite="lax",path="/")
+    return {"ok":True,"username":username}
+
+@app.post("/api/auth/login")
+def login(payload: LoginPayload, request: Request, response: Response):
+    identifier=payload.identifier.strip().lower()
+    with Session() as db:
+        user=db.scalar(select(User).where((User.email==identifier)|(User.username==identifier)))
+        if user is None or not user.is_active or not verify_password(payload.password,user.password_hash):
+            raise HTTPException(401,"Usuário ou senha incorretos.")
+        uid=user.id; username=user.username
+    response.set_cookie("vagas_ia_session",session_token(uid),max_age=SESSION_TTL,httponly=True,secure=request.url.scheme=="https",samesite="lax",path="/")
+    return {"ok":True,"username":username}
+
+@app.get("/api/auth/me")
+def auth_me(user=Depends(require_auth)):
+    return {"authenticated":True,"username":user.username}
+
+@app.post("/api/auth/logout")
+def logout(response: Response):
+    response.delete_cookie("vagas_ia_session",path="/",httponly=True,samesite="lax")
+    return {"ok":True}
 
 @app.get("/api/health")
 def health():
