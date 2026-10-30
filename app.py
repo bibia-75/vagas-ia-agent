@@ -51,10 +51,10 @@ class Profile(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     user_id: Mapped[int | None] = mapped_column(Integer, nullable=True, unique=True, index=True)
     full_name: Mapped[str] = mapped_column(String(120), default="")
-    target_roles: Mapped[str] = mapped_column(String(500), default="Marketplace; E-commerce; Social Media; Customer Support; Assistente Virtual")
-    target_salary: Mapped[str] = mapped_column(String(100), default="A partir de R$ 3.500")
+    target_roles: Mapped[str] = mapped_column(String(500), default="")
+    target_salary: Mapped[str] = mapped_column(String(100), default="Não definido")
     locations: Mapped[str] = mapped_column(String(300), default="Remoto; híbrido; qualquer lugar do Brasil")
-    skills: Mapped[str] = mapped_column(Text, default="Shopee; Mercado Livre; TikTok Shop; SHEIN; Temu; Amazon; anúncios; catálogo; Instagram; TikTok; Canva; Excel; atendimento")
+    skills: Mapped[str] = mapped_column(Text, default="")
     resume_text: Mapped[str] = mapped_column(Text, default="")
     resume_filename: Mapped[str] = mapped_column(String(255), default="")
     resume_mime: Mapped[str] = mapped_column(String(100), default="application/pdf")
@@ -311,10 +311,19 @@ def score_job(title, location, roles="", skills="", resume_text="", description=
     return min(100,score)
 class StatusUpdate(BaseModel):
     status: str
+class RegisterPayload(BaseModel):
+    username: str = Field(min_length=3,max_length=80,pattern=r"^[a-zA-Z0-9_.-]+$")
+    email: str = Field(min_length=5,max_length=255)
+    password: str = Field(min_length=10,max_length=128)
+
+class LoginPayload(BaseModel):
+    identifier: str = Field(min_length=1,max_length=255)
+    password: str = Field(min_length=1,max_length=128)
+
 class ProfileUpdate(BaseModel):
     full_name: str = Field(default="", max_length=120)
     target_roles: str = Field(default="", max_length=500)
-    target_salary: str = Field(default="A partir de R$ 3.500", max_length=100)
+    target_salary: str = Field(default="Não definido", max_length=100)
     locations: str = Field(default="Remoto; híbrido; qualquer lugar do Brasil", max_length=300)
     skills: str = Field(default="", max_length=4000)
     email: str = Field(default="", max_length=255)
