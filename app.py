@@ -170,9 +170,10 @@ with engine.begin() as conn:
 legacy_user_id=None
 if APP_USER and APP_PASSWORD:
     with Session() as db:
-        legacy=db.scalar(select(User).where(User.username==APP_USER))
+        legacy_username=APP_USER.strip().lower()
+        legacy=db.scalar(select(User).where(User.username==legacy_username))
         if legacy is None:
-            legacy=User(username=APP_USER,email=(APP_USER.lower() if "@" in APP_USER else APP_USER.lower()+"@legacy.local"),password_hash=hash_password(APP_PASSWORD))
+            legacy=User(username=legacy_username,email=(APP_USER.lower() if "@" in APP_USER else legacy_username+"@legacy.local"),password_hash=hash_password(APP_PASSWORD))
             db.add(legacy)
             db.flush()
         legacy_user_id=legacy.id
@@ -227,7 +228,7 @@ def require_auth(request: Request):
                 username,password=raw.split(":",1)
                 if secrets.compare_digest(username,APP_USER) and secrets.compare_digest(password,APP_PASSWORD):
                     with Session() as db:
-                        legacy=db.scalar(select(User).where(User.username==APP_USER))
+                        legacy=db.scalar(select(User).where(User.username==APP_USER.strip().lower()))
                         if legacy is not None:
                             return SimpleNamespace(id=legacy.id,username=legacy.username,email=legacy.email)
             except Exception:
@@ -413,6 +414,7 @@ def register(payload: RegisterPayload, request: Request, response: Response):
 
 @app.post("/api/auth/login")
 def login(payload: LoginPayload, request: Request, response: Response):
+    if not SESSION_SECRET: raise HTTPException(503,"Configure APP_SECRET no Render.")
     identifier=payload.identifier.strip().lower()
     with Session() as db:
         user=db.scalar(select(User).where((User.email==identifier)|(User.username==identifier)))
