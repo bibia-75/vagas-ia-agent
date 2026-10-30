@@ -41,7 +41,7 @@ class Profile(Base):
     full_name: Mapped[str] = mapped_column(String(120), default="")
     target_roles: Mapped[str] = mapped_column(String(500), default="Marketplace; E-commerce; Social Media; Customer Support; Assistente Virtual")
     target_salary: Mapped[str] = mapped_column(String(100), default="A partir de R$ 3.500")
-    locations: Mapped[str] = mapped_column(String(300), default="Remoto; Brasil")
+    locations: Mapped[str] = mapped_column(String(300), default="Remoto; qualquer lugar do Brasil")
     skills: Mapped[str] = mapped_column(Text, default="Shopee; Mercado Livre; TikTok Shop; SHEIN; Temu; Amazon; anúncios; catálogo; Instagram; TikTok; Canva; Excel; atendimento")
     resume_text: Mapped[str] = mapped_column(Text, default="")
     resume_filename: Mapped[str] = mapped_column(String(255), default="")
@@ -88,6 +88,7 @@ if engine.dialect.name == "sqlite":
     existing_jobs = {col["name"] for col in inspect(engine).get_columns("jobs")}
     with engine.begin() as conn:
         conn.exec_driver_sql("UPDATE profile SET target_salary = 'A partir de R$ 3.500' WHERE target_salary = 'R$ 2.500+'")
+        conn.exec_driver_sql("UPDATE profile SET locations = 'Remoto; qualquer lugar do Brasil' WHERE locations = 'Remoto; Brasil'")
         if "description" not in existing_jobs:
             conn.exec_driver_sql("ALTER TABLE jobs ADD COLUMN description TEXT NOT NULL DEFAULT ''")
         if "salary" not in existing_jobs:
@@ -179,7 +180,7 @@ def remote_location_allowed(location, description=""):
     loc=(location or "").lower()
     if any(x in loc for x in ["hybrid", "híbrido", "hibrido", "on-site", "onsite", "on site", "presencial"]): return False
     text=loc+" "+(description or "")[:1800].lower()
-    restricted=["united states only", "us only", "usa only", "uk only", "canada only", "europe only", "must be located in the united states", "only in the united states", "somente nos estados unidos"]
+    restricted=["united states only", "usa only", "uk only", "canada only", "europe only", "must be located in the united states", "only in the united states", "somente nos estados unidos"]
     return not any(x in text for x in restricted)
 
 def location_verification_label(location):
@@ -417,7 +418,7 @@ async def search_jobs(user: str = Depends(require_auth), limit: int = 50):
         try:
             r=await client.get("https://jobicy.com/api/v2/remote-jobs",params={"count":limit,"geo":"brazil"}); r.raise_for_status()
             for j in r.json().get("jobs",[]):
-                found.append({"url":j.get("url"),"title":j.get("jobTitle") or "Vaga sem título","company":j.get("companyName") or "Empresa não informada","location":j.get("jobGeo") or "Remoto","source":"Jobicy","description":j.get("jobDescription") or j.get("jobExcerpt") or "", "salary":j.get("salary") or "", "contract_type":j.get("jobType") or ""})
+                found.append({"url":j.get("url"),"title":j.get("jobTitle") or "Vaga sem título","company":j.get("companyName") or "Empresa não informada","location":j.get("jobGeo") or "Remoto","source":"Jobicy","description":j.get("jobDescription") or j.get("jobExcerpt") or "", "salary":j.get("salary") or j.get("jobSalary") or "", "contract_type":j.get("jobType") or ""})
         except Exception as e: errors.append("Jobicy: "+str(e)[:120])
         try:
             r=await client.get("https://remotive.com/api/remote-jobs",params={"limit":limit}); r.raise_for_status()
