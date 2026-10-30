@@ -141,18 +141,89 @@ if engine.dialect.name == "postgresql":
         conn.exec_driver_sql("ALTER TABLE profile ADD COLUMN IF NOT EXISTS english_level VARCHAR(80) NOT NULL DEFAULT 'Básico'")
         conn.exec_driver_sql("ALTER TABLE profile ADD COLUMN IF NOT EXISTS application_policy VARCHAR(100) NOT NULL DEFAULT 'Automáticas quando permitidas e dados completos'")
 
-with Session() as db:
-    if db.get(Profile, 1) is None:
-        db.add(Profile(id=1))
+# Add tenant ownership columns and migrate all existing records to the legacy owner.
+with engine.begin() as conn:
+    for table in ("profile","jobs","saved_answers"):
+        cols={c["name"] for c in inspect(engine).get_columns(table)}
+        if "user_id" not in cols:
+            conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN user_id INTEGER")
+    # Old indexes enforced global uniqueness. The same job/question must be saveable by separate users.
+    conn.exec_driver_sql("DROP INDEX IF EXISTS ix_jobs_url")
+    conn.exec_driver_sql("DROP INDEX IF EXISTS ix_saved_answers_question_key")
+
+legacy_user_id=None
+if APP_USER and APP_PASSWORD:
+    with Session() as db:
+        legacy=db.scalar(select(User).where(User.username==APP_USER))
+        if legacy is None:
+            legacy=User(username=APP_USER,email=(APP_USER.lower() if "@" in APP_USER else APP_USER.lower()+"@legacy.local"),password_hash=hash_password(APP_PASSWORD))
+            db.add(legacy)
+            db.flush()
+        legacy_user_id=legacy.id
         db.commit()
 
-def require_auth(credentials: HTTPBasicCredentials = Depends(security)):
-    if not APP_USER or not APP_PASSWORD:
-        raise HTTPException(status_code=503, detail="Configure APP_USER e APP_PASSWORD no Render.")
-    ok = secrets.compare_digest(credentials.username, APP_USER) and secrets.compare_digest(credentials.password, APP_PASSWORD)
-    if not ok:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Acesso não autorizado", headers={"WWW-Authenticate":"Basic"})
-    return credentials.username
+with engine.begin() as conn:
+    if legacy_user_id is not None:
+        for table in ("profile","jobs","saved_answers"):
+            conn.exec_driver_sql(f"UPDATE {table} SET user_id = {int(legacy_user_id)} WHERE user_id IS NULL")
+    conn.exec_driver_sql("CREATE UNIQUE INDEX IF NOT EXISTS ux_profile_user_id ON profile (user_id)")
+    conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_jobs_user_id ON jobs (user_id)")
+    conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_jobs_user_url ON jobs (user_id, url)")
+    conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_saved_answers_user_id ON saved_answers (user_id)")
+    conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_saved_answers_user_question ON saved_answers (user_id, question_key)")
+
+with Session() as db:
+    unassigned=0
+    for model in (Profile,Job,SavedAnswer):
+        unassigned += db.query(model).filter(model.user_id.is_(None)).count()
+    if unassigned:
+        raise RuntimeError("Existem dados antigos sem proprietário. Configure APP_USER e APP_PASSWORD no Render para migrar a conta atual.")
+    if legacy_user_id is not None and db.scalar(select(Profile).where(Profile.user_id==legacy_user_id)) is None:
+        db.add(Profile(user_id=legacy_user_id))
+        db.commit()
+
+def hash_password(password: str) -> str:
+    salt=secrets.token_bytes(16)
+    digest=hashlib.scrypt(password.encode("utf-8"),salt=salt,n=2**14,r=8,p=1)
+    return "scrypt$"+base64.urlsafe_b64encode(salt).decode()+"$"+base64.urlsafe_b64encode(digest).decode()
+
+def verify_password(password: str, encoded: str) -> bool:
+    try:
+        algorithm,salt_b64,digest_b64=encoded.split("$",2)
+        if algorithm!="scrypt": return False
+        salt=base64.urlsafe_b64decode(salt_b64.encode())
+        expected=base64.urlsafe_b64decode(digest_b64.encode())
+        actual=hashlib.scrypt(password.encode("utf-8"),salt=salt,n=2**14,r=8,p=1)
+        return hmac.compare_digest(actual,expected)
+    except Exception:
+        return False
+
+def session_token(user_id: int) -> str:
+    expires=int(datetime.now(timezone.utc).timestamp())+SESSION_TTL
+    payload=f"{user_id}.{expires}"
+    sig=hmac.new(SESSION_SECRET,payload.encode(),hashlib.sha256).hexdigest()
+    return payload+"."+sig
+
+def session_user_id(token: str | None):
+    if not token or not SESSION_SECRET: return None
+    try:
+        uid,expiry,sig=token.split(".",2)
+        payload=uid+"."+expiry
+        expected=hmac.new(SESSION_SECRET,payload.encode(),hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(sig,expected) or int(expiry)<int(datetime.now(timezone.utc).timestamp()): return None
+        return int(uid)
+    except Exception:
+        return None
+
+def require_auth(request: Request):
+    user_id=session_user_id(request.cookies.get("vagas_ia_session"))
+    if user_id is None:
+        raise HTTPException(status_code=401,detail="Faça login para continuar.")
+    with Session() as db:
+        user=db.get(User,user_id)
+        if user is None or not user.is_active:
+            raise HTTPException(status_code=401,detail="Sessão inválida. Entre novamente.")
+        return SimpleNamespace(id=user.id,username=user.username,email=user.email)
 
 def profile_dict(p):
     return {"full_name":p.full_name,"target_roles":p.target_roles,"target_salary":p.target_salary,"locations":p.locations,"skills":p.skills,"email":p.email,"phone":p.phone,"city":p.city,"education":p.education,"experience_summary":p.experience_summary,"linkedin_url":p.linkedin_url,"portfolio_url":p.portfolio_url,"contract_type":p.contract_type,"english_level":p.english_level,"application_policy":p.application_policy,"resume_filename":p.resume_filename,"resume_text_length":len(p.resume_text or ""),"updated_at":p.updated_at.isoformat() if p.updated_at else None}
