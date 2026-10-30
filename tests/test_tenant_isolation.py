@@ -84,9 +84,25 @@ class TenantIsolationTests(unittest.TestCase):
             db.commit()
             job_id = job.id
 
+        with service.Session() as db:
+            caio_user = db.scalar(select(service.User).where(service.User.username == "caio-ci"))
+            db.add(service.Job(
+                user_id=caio_user.id,
+                url="https://example.test/private-job",
+                title="Mesma vaga salva pela outra conta",
+                company="Outra conta",
+                location="Remoto",
+                source="Teste",
+                score=75
+            ))
+            db.commit()
+
         self.assertEqual(self.ann.get("/api/jobs").status_code, 200)
-        self.assertTrue(any(x["id"] == job_id for x in self.ann.get("/api/jobs").json()))
-        self.assertFalse(any(x["id"] == job_id for x in self.caio.get("/api/jobs").json()))
+        ann_jobs = self.ann.get("/api/jobs").json()
+        caio_jobs = self.caio.get("/api/jobs").json()
+        self.assertTrue(any(x["id"] == job_id and x["title"] == "Vaga privada de teste" for x in ann_jobs))
+        self.assertFalse(any(x["id"] == job_id for x in caio_jobs))
+        self.assertTrue(any(x["title"] == "Mesma vaga salva pela outra conta" for x in caio_jobs))
         self.assertEqual(self.caio.get(f"/api/jobs/{job_id}/analysis").status_code, 404)
         self.assertEqual(self.caio.patch(f"/api/jobs/{job_id}", json={"status": "Prioritária"}).status_code, 404)
 
