@@ -246,14 +246,14 @@ def minimum_salary_brl(value):
     import re
     raw=(value or "").lower()
     m=re.search(r"(?:r\$|brl)\s*([\d.]+(?:,[\d]{1,2})?)", raw)
-    if not m: return 3500.0
+    if not m: return None
     try: return float(m.group(1).replace(".","").replace(",","."))
-    except ValueError: return 3500.0
-def salary_is_below_minimum(salary, minimum=3500.0):
+    except ValueError: return None
+def salary_is_below_minimum(salary, minimum=None):
     """Filtra apenas faixa mensal em BRL cujo teto está abaixo do mínimo."""
     import re
     raw=(salary or "").lower()
-    if not raw or not ("r$" in raw or "brl" in raw): return False
+    if minimum is None or not raw or not ("r$" in raw or "brl" in raw): return False
     if any(x in raw for x in ["/ano", "anual", "year", "/hour", "/hora", "hourly", "por hora"]): return False
     values=[]
     for item in re.findall(r"(?:r\$|brl)\s*([\d.]+(?:,[\d]{1,2})?)", raw):
