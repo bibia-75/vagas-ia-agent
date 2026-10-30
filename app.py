@@ -1,10 +1,10 @@
-import os, secrets, csv, io
+import os, secrets, csv, io, hashlib, hmac, base64
+from types import SimpleNamespace
 from datetime import datetime, timezone
 from pathlib import Path
 import httpx
-from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File
+from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Request
 from fastapi.responses import HTMLResponse, Response
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, Field
 from sqlalchemy import create_engine, String, Text, Integer, DateTime, LargeBinary, select, inspect
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
@@ -18,7 +18,9 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
 from langdetect import detect, LangDetectException
 
 app = FastAPI(title="Vagas IA")
-security = HTTPBasic()
+SESSION_SECRET = (os.getenv('APP_SECRET') or os.getenv('APP_PASSWORD', '')).encode('utf-8')
+SESSION_COOKIE = 'vagas_ia_session'
+SESSION_TTL = 60 * 60 * 24 * 7
 APP_USER = os.getenv("APP_USER", "")
 APP_PASSWORD = os.getenv("APP_PASSWORD", "")
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
@@ -35,9 +37,19 @@ BASE = Path(__file__).parent
 
 class Base(DeclarativeBase): pass
 
+class User(Base):
+    __tablename__ = "users"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    username: Mapped[str] = mapped_column(String(80), unique=True, index=True)
+    email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    password_hash: Mapped[str] = mapped_column(String(300))
+    is_active: Mapped[bool] = mapped_column(default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda:datetime.now(timezone.utc))
+
 class Profile(Base):
     __tablename__ = "profile"
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int | None] = mapped_column(Integer, nullable=True, unique=True, index=True)
     full_name: Mapped[str] = mapped_column(String(120), default="")
     target_roles: Mapped[str] = mapped_column(String(500), default="Marketplace; E-commerce; Social Media; Customer Support; Assistente Virtual")
     target_salary: Mapped[str] = mapped_column(String(100), default="A partir de R$ 3.500")
@@ -62,7 +74,8 @@ class Profile(Base):
 class Job(Base):
     __tablename__ = "jobs"
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    url: Mapped[str] = mapped_column(String(1500), unique=True, index=True)
+    user_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    url: Mapped[str] = mapped_column(String(1500), index=True)
     title: Mapped[str] = mapped_column(String(500), default="")
     company: Mapped[str] = mapped_column(String(300), default="")
     location: Mapped[str] = mapped_column(String(500), default="")
@@ -77,7 +90,8 @@ class Job(Base):
 class SavedAnswer(Base):
     __tablename__ = "saved_answers"
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    question_key: Mapped[str] = mapped_column(String(500), unique=True, index=True)
+    user_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    question_key: Mapped[str] = mapped_column(String(500), index=True)
     question_text: Mapped[str] = mapped_column(String(1000), default="")
     answer: Mapped[str] = mapped_column(Text, default="")
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda:datetime.now(timezone.utc))
