@@ -536,8 +536,8 @@ def tailor_resume(job_id:int, user=Depends(require_auth), format:str="docx"):
 @app.get("/api/jobs/{job_id}/analysis")
 def analyze_job(job_id:int,user=Depends(require_auth)):
     with Session() as db:
-        job=db.get(Job,job_id); profile=db.get(Profile,1)
-        if not job: raise HTTPException(404,"Vaga não encontrada")
+        job=db.scalar(select(Job).where(Job.id==job_id,Job.user_id==user.id)); profile=db.scalar(select(Profile).where(Profile.user_id==user.id))
+        if not job or not profile: raise HTTPException(404,"Vaga não encontrada")
         cv=(profile.resume_text or "").lower(); desc=(job.description or "").lower(); title=(job.title or "").lower()
         skill_terms=["marketplace","e-commerce","ecommerce","social media","instagram","tiktok","shopee","mercado livre","catalog","catálogo","ads","anúncios","atendimento","customer support","excel","canva","content","conteúdo","estoque","logística","product listing","gestão","gestao"]
         present=[term for term in skill_terms if term in cv and (term in desc or term in title)]
@@ -591,13 +591,13 @@ async def search_jobs(user=Depends(require_auth), limit: int = 50):
                     old.score=0
                     filtered_existing += 1
                 continue
-            old=db.scalar(select(Job).where(Job.url==j["url"]))
+            old=db.scalar(select(Job).where(Job.user_id==user.id,Job.url==j["url"]))
             if old:
                 old.title=j["title"]; old.company=j["company"]; old.location=j["location"]; old.source=j["source"]; old.description=j.get("description",""); old.salary=j.get("salary",""); old.contract_type=j.get("contract_type",""); old.score=score
             else:
-                db.add(Job(user_id=user.id,url=j["url"],title=j["title"]),company=j["company"],location=j["location"],source=j["source"],description=j.get("description",""),salary=j.get("salary",""),contract_type=j.get("contract_type",""),score=score,status="Encontrada")); inserted+=1
+                db.add(Job(user_id=user.id,url=j["url"],title=j["title"],company=j["company"],location=j["location"],source=j["source"],description=j.get("description",""),salary=j.get("salary",""),contract_type=j.get("contract_type",""),score=score,status="Encontrada")); inserted+=1
         db.commit()
-        total=db.scalar(select(Job).where(Job.score>0).with_only_columns(Job.id).order_by(None).subquery().select()) if False else len(db.scalars(select(Job.id).where(Job.score>0)).all())
+        total=db.scalar(select(Job).where(Job.score>0).with_only_columns(Job.id).order_by(None).subquery().select()) if False else len(db.scalars(select(Job.id).where(Job.user_id==user.id,Job.score>0)).all())
     return {"new":inserted,"total":total,"checked":len(found),"filtered_existing":filtered_existing,"errors":errors}
 
 @app.patch("/api/jobs/{job_id}")
