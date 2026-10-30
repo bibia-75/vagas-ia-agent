@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Entrar · Vagas IA</title>
+<style>
+:root{font-family:Inter,system-ui,Arial;color:#262626;background:#f6f4f2}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:20px}.card{width:min(100%,440px);background:#fff;border:1px solid #e7e1dd;border-radius:18px;padding:28px;box-shadow:0 12px 36px #342a2610}h1{margin:0 0 6px;color:#4c3933}.muted{color:#69645f;font-size:14px;line-height:1.5}.tabs{display:flex;gap:8px;margin:22px 0 18px}.tabs button{flex:1;border:0;border-radius:9px;padding:11px;background:#eee8e4;color:#342a26;font-weight:650;cursor:pointer}.tabs button.active,.submit{background:#4c3933;color:white}label{display:block;font-size:13px;color:#69645f;margin:12px 0 5px}input{width:100%;padding:12px;border:1px solid #ddd;border-radius:9px;font:inherit}button.submit{width:100%;border:0;border-radius:9px;padding:13px;margin-top:18px;font-weight:700;cursor:pointer}.hidden{display:none}.message{min-height:22px;margin-top:12px;color:#9b2c2c;font-size:13px}.privacy{border-top:1px solid #eee8e4;padding-top:14px;margin-top:18px;font-size:12px;color:#69645f}
+</style>
+</head>
+<body>
+<main class="card">
+<h1>Vagas IA</h1>
+<p class="muted">Entre na sua conta para acessar seu perfil, currículo e suas vagas. Cada conta tem seus próprios dados.</p>
+<div class="tabs"><button id="tabLogin" class="active" type="button">Entrar</button><button id="tabRegister" type="button">Criar conta</button></div>
+<form id="loginForm">
+<label for="loginId">Usuário ou e-mail</label><input id="loginId" autocomplete="username" required maxlength="255">
+<label for="loginPassword">Senha</label><input id="loginPassword" type="password" autocomplete="current-password" required maxlength="128">
+<button class="submit" type="submit">Entrar</button>
+</form>
+<form id="registerForm" class="hidden">
+<label for="registerUsername">Nome de usuário</label><input id="registerUsername" autocomplete="username" minlength="3" maxlength="80" pattern="[A-Za-z0-9_.-]+" required>
+<label for="registerEmail">E-mail</label><input id="registerEmail" type="email" autocomplete="email" required maxlength="255">
+<label for="registerPassword">Crie uma senha (mínimo de 10 caracteres)</label><input id="registerPassword" type="password" autocomplete="new-password" minlength="10" maxlength="128" required>
+<button class="submit" type="submit">Criar minha conta</button>
+</form>
+<div id="message" class="message" role="status"></div>
+<div class="privacy">Suas informações profissionais, currículo, preferências e vagas salvas ficam vinculadas à sua conta.</div>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+async function send(url,data){const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify(data)});let body={};try{body=await r.json()}catch{}if(!r.ok)throw new Error(body.detail||'Não foi possível concluir.');return body}
+function tab(which){const login=which==='login';$('loginForm').classList.toggle('hidden',!login);$('registerForm').classList.toggle('hidden',login);$('tabLogin').classList.toggle('active',login);$('tabRegister').classList.toggle('active',!login);$('message').textContent=''}
+$('tabLogin').onclick=()=>tab('login');$('tabRegister').onclick=()=>tab('register');
+$('loginForm').onsubmit=async e=>{e.preventDefault();$('message').textContent='Entrando…';try{await send('/api/auth/login',{identifier:$('loginId').value,password:$('loginPassword').value});location.href='/app'}catch(err){$('message').textContent=err.message}};
+$('registerForm').onsubmit=async e=>{e.preventDefault();$('message').textContent='Criando sua conta…';try{await send('/api/auth/register',{username:$('registerUsername').value,email:$('registerEmail').value,password:$('registerPassword').value});location.href='/app'}catch(err){$('message').textContent=err.message}};
+fetch('/api/auth/me',{credentials:'same-origin'}).then(r=>{if(r.ok)location.href='/app'}).catch(()=>{});
+</script>
+</body></html>
