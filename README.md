@@ -3,7 +3,10 @@
 Painel privado para buscar vagas remotas, pontuar compatibilidade, guardar status e exportar histórico.
 
 ## O que está implementado
-- Painel protegido por HTTP Basic Auth (APP_USER e APP_PASSWORD).
+- Cadastro e login por usuário, com senha armazenada por hash e sessão protegida por cookie HttpOnly.
+- Dados isolados por conta: perfil, currículo, vagas, status, respostas salvas e exportações são consultados pelo identificador do usuário autenticado.
+- Migração da conta antiga: APP_USER e APP_PASSWORD identificam o proprietário dos dados existentes; a busca agendada do GitHub Actions continua autorizada apenas no endpoint de busca.
+- Configure APP_SECRET no Render com um valor aleatório longo para assinar sessões. Mantenha DATABASE_URL apontando para PostgreSQL persistente.
 - Busca sob demanda em feeds públicos Jobicy e Remotive; cobertura e resultados dependem dessas fontes.
 - Deduplicação por URL e pontuação aproximada por cargo, competências e texto extraído do currículo.
 - O salário mínimo é uma preferência configurável no perfil (R$ 3.500 no perfil inicial desta instalação): anúncios com faixa salarial mensal explicitamente em reais e totalmente abaixo do limite informado são filtrados; salários não divulgados permanecem visíveis para conferência. Não há conversão de moedas nem comparação de faixas anuais/por hora com salário mensal.
