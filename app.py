@@ -68,6 +68,8 @@ class Job(Base):
     location: Mapped[str] = mapped_column(String(500), default="")
     source: Mapped[str] = mapped_column(String(100), default="")
     description: Mapped[str] = mapped_column(Text, default="")
+    salary: Mapped[str] = mapped_column(String(200), default="")
+    contract_type: Mapped[str] = mapped_column(String(120), default="")
     score: Mapped[int] = mapped_column(Integer, default=0)
     status: Mapped[str] = mapped_column(String(60), default="Encontrada")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda:datetime.now(timezone.utc))
@@ -87,6 +89,10 @@ if engine.dialect.name == "sqlite":
     with engine.begin() as conn:
         if "description" not in existing_jobs:
             conn.exec_driver_sql("ALTER TABLE jobs ADD COLUMN description TEXT NOT NULL DEFAULT ''")
+        if "salary" not in existing_jobs:
+            conn.exec_driver_sql("ALTER TABLE jobs ADD COLUMN salary VARCHAR(200) NOT NULL DEFAULT ''")
+        if "contract_type" not in existing_jobs:
+            conn.exec_driver_sql("ALTER TABLE jobs ADD COLUMN contract_type VARCHAR(120) NOT NULL DEFAULT ''")
     existing = {col["name"] for col in inspect(engine).get_columns("profile")}
     with engine.begin() as conn:
         if "resume_text" not in existing:
@@ -102,6 +108,8 @@ if engine.dialect.name == "sqlite":
             if column not in existing: conn.exec_driver_sql(f"ALTER TABLE profile ADD COLUMN {column} {definition}")
 if engine.dialect.name == "postgresql":
     with engine.begin() as conn:
+        conn.exec_driver_sql("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS salary VARCHAR(200) NOT NULL DEFAULT ''")
+        conn.exec_driver_sql("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS contract_type VARCHAR(120) NOT NULL DEFAULT ''")
         conn.exec_driver_sql("ALTER TABLE profile ADD COLUMN IF NOT EXISTS resume_pdf BYTEA")
         conn.exec_driver_sql("ALTER TABLE profile ADD COLUMN IF NOT EXISTS resume_mime VARCHAR(100) NOT NULL DEFAULT 'application/pdf'")
         conn.exec_driver_sql("ALTER TABLE profile ADD COLUMN IF NOT EXISTS email VARCHAR(255) NOT NULL DEFAULT ''")
@@ -143,10 +151,37 @@ def is_portuguese_listing(title, description):
     except LangDetectException:
         return False
 
+
+def salary_is_below_minimum(salary, minimum=3500.0):
+    """Filtra apenas faixa mensal em BRL cujo teto está abaixo do mínimo."""
+    import re
+    raw=(salary or "").lower()
+    if not raw or not ("r$" in raw or "brl" in raw): return False
+    if any(x in raw for x in ["/ano", "anual", "year", "/hour", "/hora", "hourly", "por hora"]): return False
+    values=[]
+    for item in re.findall(r"(?:r\$|brl)\s*([\d.]+(?:,[\d]{1,2})?)", raw):
+        try: values.append(float(item.replace(".","").replace(",",".")))
+        except ValueError: pass
+    return bool(values) and max(values) < minimum
+
+def remote_location_allowed(location, description=""):
+    """Descarta vagas explicitamente híbridas/presenciais ou restritas a outros países."""
+    loc=(location or "").lower()
+    if any(x in loc for x in ["hybrid", "híbrido", "hibrido", "on-site", "onsite", "on site", "presencial"]): return False
+    text=loc+" "+(description or "")[:1800].lower()
+    restricted=["united states only", "us only", "usa only", "uk only", "canada only", "europe only", "must be located in the united states", "only in the united states", "somente nos estados unidos"]
+    return not any(x in text for x in restricted)
+
+def location_verification_label(location):
+    loc=(location or "").lower()
+    terms=["brazil", "brasil", "worldwide", "anywhere", "global", "latin america", "south america", "all countries", "qualquer lugar"]
+    return "Elegibilidade Brasil indicada pela fonte" if any(x in loc for x in terms) else "Confirmar se aceita profissionais no Brasil"
+
 def score_job(title, location, roles="", skills="", resume_text="", description=""):
     t=(title or "").lower(); loc=(location or "").lower()
     desc=(description or "").lower()
     if not is_portuguese_listing(title, description): return 0
+    if not remote_location_allowed(location, description): return 0
     text=(t+" "+desc)
     # Exclude clear Spanish-bilingual roles, not every job mentioning Spanish in unrelated context.
     spanish_markers=["spanish","español","espanhol","língua espanhola","lingua espanhola"]
@@ -363,7 +398,7 @@ def analyze_job(job_id:int,user:str=Depends(require_auth)):
 def list_jobs(user: str = Depends(require_auth)):
     with Session() as db:
         jobs=db.scalars(select(Job).where(Job.score>0).order_by(Job.score.desc(),Job.id.desc())).all()
-        return [dict(id=j.id,url=j.url,title=j.title,company=j.company,location=j.location,source=j.source,score=j.score,status=j.status,created_at=j.created_at.isoformat()) for j in jobs]
+        return [dict(id=j.id,url=j.url,title=j.title,company=j.company,location=j.location,source=j.source,salary=j.salary,contract_type=j.contract_type,location_check=location_verification_label(j.location),score=j.score,status=j.status,created_at=j.created_at.isoformat()) for j in jobs]
 
 @app.post("/api/search")
 async def search_jobs(user: str = Depends(require_auth), limit: int = 50):
@@ -388,6 +423,7 @@ async def search_jobs(user: str = Depends(require_auth), limit: int = 50):
         # Re-score existing records too, so previously saved jobs that now fail filters disappear.
         for saved in db.scalars(select(Job)).all():
             new_score=score_job(saved.title,saved.location,p.target_roles,p.skills,p.resume_text,saved.description)
+            if salary_is_below_minimum(saved.salary): new_score=0
             if new_score <= 0 and saved.score > 0:
                 saved.score=0
                 filtered_existing += 1
