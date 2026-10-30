@@ -41,7 +41,7 @@ class Profile(Base):
     full_name: Mapped[str] = mapped_column(String(120), default="")
     target_roles: Mapped[str] = mapped_column(String(500), default="Marketplace; E-commerce; Social Media; Customer Support; Assistente Virtual")
     target_salary: Mapped[str] = mapped_column(String(100), default="A partir de R$ 3.500")
-    locations: Mapped[str] = mapped_column(String(300), default="Remoto; qualquer lugar do Brasil")
+    locations: Mapped[str] = mapped_column(String(300), default="Remoto; híbrido; qualquer lugar do Brasil")
     skills: Mapped[str] = mapped_column(Text, default="Shopee; Mercado Livre; TikTok Shop; SHEIN; Temu; Amazon; anúncios; catálogo; Instagram; TikTok; Canva; Excel; atendimento")
     resume_text: Mapped[str] = mapped_column(Text, default="")
     resume_filename: Mapped[str] = mapped_column(String(255), default="")
@@ -88,7 +88,7 @@ if engine.dialect.name == "sqlite":
     existing_jobs = {col["name"] for col in inspect(engine).get_columns("jobs")}
     with engine.begin() as conn:
         conn.exec_driver_sql("UPDATE profile SET target_salary = 'A partir de R$ 3.500' WHERE target_salary = 'R$ 2.500+'")
-        conn.exec_driver_sql("UPDATE profile SET locations = 'Remoto; qualquer lugar do Brasil' WHERE locations = 'Remoto; Brasil'")
+        conn.exec_driver_sql("UPDATE profile SET locations = 'Remoto; híbrido; qualquer lugar do Brasil' WHERE locations IN ('Remoto; Brasil', 'Remoto; qualquer lugar do Brasil')")
         if "description" not in existing_jobs:
             conn.exec_driver_sql("ALTER TABLE jobs ADD COLUMN description TEXT NOT NULL DEFAULT ''")
         if "salary" not in existing_jobs:
@@ -111,7 +111,7 @@ if engine.dialect.name == "sqlite":
 if engine.dialect.name == "postgresql":
     with engine.begin() as conn:
         conn.exec_driver_sql("UPDATE profile SET target_salary = 'A partir de R$ 3.500' WHERE target_salary = 'R$ 2.500+'")
-        conn.exec_driver_sql("UPDATE profile SET locations = 'Remoto; qualquer lugar do Brasil' WHERE locations = 'Remoto; Brasil'")
+        conn.exec_driver_sql("UPDATE profile SET locations = 'Remoto; híbrido; qualquer lugar do Brasil' WHERE locations IN ('Remoto; Brasil', 'Remoto; qualquer lugar do Brasil')")
         conn.exec_driver_sql("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS salary VARCHAR(200) NOT NULL DEFAULT ''")
         conn.exec_driver_sql("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS contract_type VARCHAR(120) NOT NULL DEFAULT ''")
         conn.exec_driver_sql("ALTER TABLE profile ADD COLUMN IF NOT EXISTS resume_pdf BYTEA")
@@ -179,7 +179,7 @@ def salary_is_below_minimum(salary, minimum=3500.0):
 def remote_location_allowed(location, description=""):
     """Descarta vagas explicitamente híbridas/presenciais ou restritas a outros países."""
     loc=(location or "").lower()
-    if any(x in loc for x in ["hybrid", "híbrido", "hibrido", "on-site", "onsite", "on site", "presencial"]): return False
+    if any(x in loc for x in ["on-site", "onsite", "on site", "presencial", "in-office", "in office", "no escritório", "no escritorio"]): return False
     text=loc+" "+(description or "")[:1800].lower()
     restricted=["united states only", "usa only", "uk only", "canada only", "europe only", "must be located in the united states", "only in the united states", "somente nos estados unidos"]
     return not any(x in text for x in restricted)
@@ -230,7 +230,7 @@ class ProfileUpdate(BaseModel):
     full_name: str = Field(default="", max_length=120)
     target_roles: str = Field(default="", max_length=500)
     target_salary: str = Field(default="A partir de R$ 3.500", max_length=100)
-    locations: str = Field(default="Remoto; qualquer lugar do Brasil", max_length=300)
+    locations: str = Field(default="Remoto; híbrido; qualquer lugar do Brasil", max_length=300)
     skills: str = Field(default="", max_length=4000)
     email: str = Field(default="", max_length=255)
     phone: str = Field(default="", max_length=80)
