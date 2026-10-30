@@ -152,6 +152,14 @@ def is_portuguese_listing(title, description):
         return False
 
 
+
+def minimum_salary_brl(value):
+    import re
+    raw=(value or "").lower()
+    m=re.search(r"(?:r\$|brl)\s*([\d.]+(?:,[\d]{1,2})?)", raw)
+    if not m: return 3500.0
+    try: return float(m.group(1).replace(".","").replace(",","."))
+    except ValueError: return 3500.0
 def salary_is_below_minimum(salary, minimum=3500.0):
     """Filtra apenas faixa mensal em BRL cujo teto está abaixo do mínimo."""
     import re
@@ -407,14 +415,14 @@ async def search_jobs(user: str = Depends(require_auth), limit: int = 50):
         try:
             r=await client.get("https://jobicy.com/api/v2/remote-jobs",params={"count":limit,"geo":"brazil"}); r.raise_for_status()
             for j in r.json().get("jobs",[]):
-                found.append({"url":j.get("url"),"title":j.get("jobTitle") or "Vaga sem título","company":j.get("companyName") or "Empresa não informada","location":j.get("jobGeo") or "Remoto","source":"Jobicy","description":j.get("jobDescription") or j.get("jobExcerpt") or ""})
+                found.append({"url":j.get("url"),"title":j.get("jobTitle") or "Vaga sem título","company":j.get("companyName") or "Empresa não informada","location":j.get("jobGeo") or "Remoto","source":"Jobicy","description":j.get("jobDescription") or j.get("jobExcerpt") or "", "salary":j.get("salary") or "", "contract_type":j.get("jobType") or ""})
         except Exception as e: errors.append("Jobicy: "+str(e)[:120])
         try:
             r=await client.get("https://remotive.com/api/remote-jobs",params={"limit":limit}); r.raise_for_status()
             for j in r.json().get("jobs",[]):
                 loc=j.get("candidate_required_location") or ""
                 if any(x in loc.lower() for x in ["worldwide","anywhere","brazil","brasil","south america","latin america","all countries","global"]):
-                    found.append({"url":j.get("url"),"title":j.get("title") or "Vaga sem título","company":j.get("company_name") or "Empresa não informada","location":loc or "Remoto","source":"Remotive","description":j.get("description") or ""})
+                    found.append({"url":j.get("url"),"title":j.get("title") or "Vaga sem título","company":j.get("company_name") or "Empresa não informada","location":loc or "Remoto","source":"Remotive","description":j.get("description") or "", "salary":j.get("salary") or "", "contract_type":j.get("job_type") or ""})
         except Exception as e: errors.append("Remotive: "+str(e)[:120])
     inserted=0
     filtered_existing=0
@@ -423,7 +431,7 @@ async def search_jobs(user: str = Depends(require_auth), limit: int = 50):
         # Re-score existing records too, so previously saved jobs that now fail filters disappear.
         for saved in db.scalars(select(Job)).all():
             new_score=score_job(saved.title,saved.location,p.target_roles,p.skills,p.resume_text,saved.description)
-            if salary_is_below_minimum(saved.salary): new_score=0
+            if salary_is_below_minimum(saved.salary, minimum_salary_brl(p.target_salary)): new_score=0
             if new_score <= 0 and saved.score > 0:
                 saved.score=0
                 filtered_existing += 1
@@ -432,6 +440,7 @@ async def search_jobs(user: str = Depends(require_auth), limit: int = 50):
         for j in found:
             if not j.get("url"): continue
             score=score_job(j["title"],j["location"],p.target_roles,p.skills,p.resume_text,j.get("description",""))
+            if salary_is_below_minimum(j.get("salary",""), minimum_salary_brl(p.target_salary)): score=0
             old=db.scalar(select(Job).where(Job.url==j["url"]))
             if score<=0:
                 if old and old.score>0:
@@ -440,9 +449,9 @@ async def search_jobs(user: str = Depends(require_auth), limit: int = 50):
                 continue
             old=db.scalar(select(Job).where(Job.url==j["url"]))
             if old:
-                old.title=j["title"]; old.company=j["company"]; old.location=j["location"]; old.source=j["source"]; old.description=j.get("description",""); old.score=score
+                old.title=j["title"]; old.company=j["company"]; old.location=j["location"]; old.source=j["source"]; old.description=j.get("description",""); old.salary=j.get("salary",""); old.contract_type=j.get("contract_type",""); old.score=score
             else:
-                db.add(Job(url=j["url"],title=j["title"],company=j["company"],location=j["location"],source=j["source"],description=j.get("description",""),score=score,status="Encontrada")); inserted+=1
+                db.add(Job(url=j["url"],title=j["title"],company=j["company"],location=j["location"],source=j["source"],description=j.get("description",""),salary=j.get("salary",""),contract_type=j.get("contract_type",""),score=score,status="Encontrada")); inserted+=1
         db.commit()
         total=db.scalar(select(Job).where(Job.score>0).with_only_columns(Job.id).order_by(None).subquery().select()) if False else len(db.scalars(select(Job.id).where(Job.score>0)).all())
     return {"new":inserted,"total":total,"checked":len(found),"filtered_existing":filtered_existing,"errors":errors}
@@ -466,8 +475,8 @@ def stats(user:str=Depends(require_auth)):
 @app.get("/api/export.csv")
 def export_csv(user:str=Depends(require_auth)):
     output=io.StringIO(); writer=csv.writer(output)
-    writer.writerow(["Vaga","Empresa","Localização","Fonte","Link","Compatibilidade","Status","Encontrada em"])
+    writer.writerow(["Vaga","Empresa","Localização","Salário informado","Vínculo informado","Fonte","Link","Compatibilidade","Status","Encontrada em"])
     with Session() as db:
         for j in db.scalars(select(Job).order_by(Job.score.desc())).all():
-            writer.writerow([j.title,j.company,j.location,j.source,j.url,j.score,j.status,j.created_at.isoformat() if j.created_at else ""])
+            writer.writerow([j.title,j.company,j.location,j.salary or "Não informado",j.contract_type or "Não informado",j.source,j.url,j.score,j.status,j.created_at.isoformat() if j.created_at else ""])
     return Response(content="\ufeff"+output.getvalue(),media_type="text/csv; charset=utf-8",headers={"Content-Disposition":"attachment; filename=vagas_ia.csv"})
