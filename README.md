@@ -29,7 +29,7 @@ No GitHub, abra Settings → Secrets and variables → Actions → New repositor
 Depois, abra Actions → “Vagas IA - busca programada” e execute Run workflow para testar. O workflow roda automaticamente entre 08h e 17h (horário de Brasília), todos os dias. O serviço gratuito do Render pode dormir; a primeira requisição pode demorar.
 
 ## Persistência: obrigatório antes de confiar nos dados
-Por padrão, sem `DATABASE_URL`, o app usa SQLite em `/tmp/vagas_ia.db`, que é temporário no Render Free. Para manter perfil, currículo e histórico após reinicializações, crie um banco PostgreSQL gerenciado e defina a variável `DATABASE_URL` no Render com a URL de conexão fornecida pelo provedor. A aplicação aceita URLs `postgresql://` e `postgres://` e usa TLS. Faça isso antes de carregar o currículo real ou acumular candidaturas. O banco não é provisionado automaticamente por este repositório.
+Por padrão, sem `DATABASE_URL`, o app usa SQLite em `/tmp/vagas_ia.db`, que é temporário no Render Free. Para manter perfil, currículo e histórico após reinicializações, crie um banco PostgreSQL gerenciado e defina a variável `DATABASE_URL` no Render com a URL de conexão fornecida pelo provedor. A aplicação aceita URLs `postgresql://` e `postgres://` e usa TLS. O `render.yaml` declara `DATABASE_URL` como variável opcional (`sync: false`): configure nela a URL do PostgreSQL no painel do Render. Faça isso antes de carregar o currículo real ou acumular candidaturas. O banco não é provisionado automaticamente por este repositório.
 
 ## Limitações importantes
 - A busca programada só fica ativa depois de configurar os três secrets do GitHub Actions.
