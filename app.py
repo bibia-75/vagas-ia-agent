@@ -111,6 +111,7 @@ if engine.dialect.name == "sqlite":
 if engine.dialect.name == "postgresql":
     with engine.begin() as conn:
         conn.exec_driver_sql("UPDATE profile SET target_salary = 'A partir de R$ 3.500' WHERE target_salary = 'R$ 2.500+'")
+        conn.exec_driver_sql("UPDATE profile SET locations = 'Remoto; qualquer lugar do Brasil' WHERE locations = 'Remoto; Brasil'")
         conn.exec_driver_sql("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS salary VARCHAR(200) NOT NULL DEFAULT ''")
         conn.exec_driver_sql("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS contract_type VARCHAR(120) NOT NULL DEFAULT ''")
         conn.exec_driver_sql("ALTER TABLE profile ADD COLUMN IF NOT EXISTS resume_pdf BYTEA")
