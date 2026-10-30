@@ -6,6 +6,9 @@ Painel privado para buscar vagas remotas, pontuar compatibilidade, guardar statu
 - Painel protegido por HTTP Basic Auth (APP_USER e APP_PASSWORD).
 - Busca sob demanda em feeds públicos Jobicy e Remotive; cobertura e resultados dependem dessas fontes.
 - Deduplicação por URL e pontuação aproximada por cargo, competências e texto extraído do currículo.
+- Salário mínimo padrão de R$ 3.500: anúncios com faixa salarial mensal explicitamente em reais e totalmente abaixo do limite são filtrados; salários não divulgados permanecem visíveis para conferência. Não há conversão de moedas nem comparação de faixas anuais/por hora com salário mensal.
+- Anúncios explicitamente híbridos/presenciais e restrições geográficas claramente incompatíveis são descartados. Quando a fonte não deixa claro se aceita profissionais no Brasil, o painel exibe um aviso para conferência manual.
+- Salário e vínculo informados pela fonte são exibidos nos resultados e exportados no CSV.
 - Perfil profissional editável, preferências de candidatura (remoto Brasil, salário mínimo, vínculo e inglês) e upload de currículo PDF com texto selecionável (até 8 MB).
 - Onboarding com checklist de informações básicas pendentes.
 - Respostas livres salvas por pergunta normalizada para reutilização futura quando a pergunta for equivalente.
@@ -26,7 +29,7 @@ No GitHub, abra Settings → Secrets and variables → Actions → New repositor
 Depois, abra Actions → “Vagas IA - busca programada” e execute Run workflow para testar. O workflow roda automaticamente entre 08h e 17h (horário de Brasília), todos os dias. O serviço gratuito do Render pode dormir; a primeira requisição pode demorar.
 
 ## Persistência: obrigatório antes de confiar nos dados
-Por padrão, sem `DATABASE_URL`, o app usa SQLite em `/tmp/vagas_ia.db`, que é temporário no Render Free. Para manter perfil, currículo e histórico após reinicializações, crie um banco PostgreSQL gerenciado e defina a variável `DATABASE_URL` no Render com a URL de conexão fornecida pelo provedor. A aplicação aceita URLs `postgresql://` e `postgres://` e usa TLS. Faça isso antes de carregar o currículo real ou acumular candidaturas. O banco não é provisionado automaticamente por este repositório.
+Por padrão, sem `DATABASE_URL`, o app usa SQLite em `/tmp/vagas_ia.db`, que é temporário no Render Free. Para manter perfil, currículo e histórico após reinicializações, crie um banco PostgreSQL gerenciado e defina a variável `DATABASE_URL` no Render com a URL de conexão fornecida pelo provedor. A aplicação aceita URLs `postgresql://` e `postgres://` e usa TLS. O `render.yaml` declara `DATABASE_URL` como variável opcional (`sync: false`): configure nela a URL do PostgreSQL no painel do Render. Faça isso antes de carregar o currículo real ou acumular candidaturas. O banco não é provisionado automaticamente por este repositório.
 
 ## Limitações importantes
 - A busca programada só fica ativa depois de configurar os três secrets do GitHub Actions.

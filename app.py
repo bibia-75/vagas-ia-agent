@@ -40,8 +40,8 @@ class Profile(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
     full_name: Mapped[str] = mapped_column(String(120), default="")
     target_roles: Mapped[str] = mapped_column(String(500), default="Marketplace; E-commerce; Social Media; Customer Support; Assistente Virtual")
-    target_salary: Mapped[str] = mapped_column(String(100), default="R$ 2.500+")
-    locations: Mapped[str] = mapped_column(String(300), default="Remoto; Brasil")
+    target_salary: Mapped[str] = mapped_column(String(100), default="A partir de R$ 3.500")
+    locations: Mapped[str] = mapped_column(String(300), default="Remoto; qualquer lugar do Brasil")
     skills: Mapped[str] = mapped_column(Text, default="Shopee; Mercado Livre; TikTok Shop; SHEIN; Temu; Amazon; anúncios; catálogo; Instagram; TikTok; Canva; Excel; atendimento")
     resume_text: Mapped[str] = mapped_column(Text, default="")
     resume_filename: Mapped[str] = mapped_column(String(255), default="")
@@ -68,6 +68,8 @@ class Job(Base):
     location: Mapped[str] = mapped_column(String(500), default="")
     source: Mapped[str] = mapped_column(String(100), default="")
     description: Mapped[str] = mapped_column(Text, default="")
+    salary: Mapped[str] = mapped_column(String(200), default="")
+    contract_type: Mapped[str] = mapped_column(String(120), default="")
     score: Mapped[int] = mapped_column(Integer, default=0)
     status: Mapped[str] = mapped_column(String(60), default="Encontrada")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda:datetime.now(timezone.utc))
@@ -85,8 +87,14 @@ Base.metadata.create_all(engine)
 if engine.dialect.name == "sqlite":
     existing_jobs = {col["name"] for col in inspect(engine).get_columns("jobs")}
     with engine.begin() as conn:
+        conn.exec_driver_sql("UPDATE profile SET target_salary = 'A partir de R$ 3.500' WHERE target_salary = 'R$ 2.500+'")
+        conn.exec_driver_sql("UPDATE profile SET locations = 'Remoto; qualquer lugar do Brasil' WHERE locations = 'Remoto; Brasil'")
         if "description" not in existing_jobs:
             conn.exec_driver_sql("ALTER TABLE jobs ADD COLUMN description TEXT NOT NULL DEFAULT ''")
+        if "salary" not in existing_jobs:
+            conn.exec_driver_sql("ALTER TABLE jobs ADD COLUMN salary VARCHAR(200) NOT NULL DEFAULT ''")
+        if "contract_type" not in existing_jobs:
+            conn.exec_driver_sql("ALTER TABLE jobs ADD COLUMN contract_type VARCHAR(120) NOT NULL DEFAULT ''")
     existing = {col["name"] for col in inspect(engine).get_columns("profile")}
     with engine.begin() as conn:
         if "resume_text" not in existing:
@@ -102,6 +110,10 @@ if engine.dialect.name == "sqlite":
             if column not in existing: conn.exec_driver_sql(f"ALTER TABLE profile ADD COLUMN {column} {definition}")
 if engine.dialect.name == "postgresql":
     with engine.begin() as conn:
+        conn.exec_driver_sql("UPDATE profile SET target_salary = 'A partir de R$ 3.500' WHERE target_salary = 'R$ 2.500+'")
+        conn.exec_driver_sql("UPDATE profile SET locations = 'Remoto; qualquer lugar do Brasil' WHERE locations = 'Remoto; Brasil'")
+        conn.exec_driver_sql("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS salary VARCHAR(200) NOT NULL DEFAULT ''")
+        conn.exec_driver_sql("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS contract_type VARCHAR(120) NOT NULL DEFAULT ''")
         conn.exec_driver_sql("ALTER TABLE profile ADD COLUMN IF NOT EXISTS resume_pdf BYTEA")
         conn.exec_driver_sql("ALTER TABLE profile ADD COLUMN IF NOT EXISTS resume_mime VARCHAR(100) NOT NULL DEFAULT 'application/pdf'")
         conn.exec_driver_sql("ALTER TABLE profile ADD COLUMN IF NOT EXISTS email VARCHAR(255) NOT NULL DEFAULT ''")
@@ -143,10 +155,45 @@ def is_portuguese_listing(title, description):
     except LangDetectException:
         return False
 
+
+
+def minimum_salary_brl(value):
+    import re
+    raw=(value or "").lower()
+    m=re.search(r"(?:r\$|brl)\s*([\d.]+(?:,[\d]{1,2})?)", raw)
+    if not m: return 3500.0
+    try: return float(m.group(1).replace(".","").replace(",","."))
+    except ValueError: return 3500.0
+def salary_is_below_minimum(salary, minimum=3500.0):
+    """Filtra apenas faixa mensal em BRL cujo teto está abaixo do mínimo."""
+    import re
+    raw=(salary or "").lower()
+    if not raw or not ("r$" in raw or "brl" in raw): return False
+    if any(x in raw for x in ["/ano", "anual", "year", "/hour", "/hora", "hourly", "por hora"]): return False
+    values=[]
+    for item in re.findall(r"(?:r\$|brl)\s*([\d.]+(?:,[\d]{1,2})?)", raw):
+        try: values.append(float(item.replace(".","").replace(",",".")))
+        except ValueError: pass
+    return bool(values) and max(values) < minimum
+
+def remote_location_allowed(location, description=""):
+    """Descarta vagas explicitamente híbridas/presenciais ou restritas a outros países."""
+    loc=(location or "").lower()
+    if any(x in loc for x in ["hybrid", "híbrido", "hibrido", "on-site", "onsite", "on site", "presencial"]): return False
+    text=loc+" "+(description or "")[:1800].lower()
+    restricted=["united states only", "usa only", "uk only", "canada only", "europe only", "must be located in the united states", "only in the united states", "somente nos estados unidos"]
+    return not any(x in text for x in restricted)
+
+def location_verification_label(location):
+    loc=(location or "").lower()
+    terms=["brazil", "brasil", "worldwide", "anywhere", "global", "latin america", "south america", "all countries", "qualquer lugar"]
+    return "Elegibilidade Brasil indicada pela fonte" if any(x in loc for x in terms) else "Confirmar se aceita profissionais no Brasil"
+
 def score_job(title, location, roles="", skills="", resume_text="", description=""):
     t=(title or "").lower(); loc=(location or "").lower()
     desc=(description or "").lower()
     if not is_portuguese_listing(title, description): return 0
+    if not remote_location_allowed(location, description): return 0
     text=(t+" "+desc)
     # Exclude clear Spanish-bilingual roles, not every job mentioning Spanish in unrelated context.
     spanish_markers=["spanish","español","espanhol","língua espanhola","lingua espanhola"]
@@ -363,7 +410,7 @@ def analyze_job(job_id:int,user:str=Depends(require_auth)):
 def list_jobs(user: str = Depends(require_auth)):
     with Session() as db:
         jobs=db.scalars(select(Job).where(Job.score>0).order_by(Job.score.desc(),Job.id.desc())).all()
-        return [dict(id=j.id,url=j.url,title=j.title,company=j.company,location=j.location,source=j.source,score=j.score,status=j.status,created_at=j.created_at.isoformat()) for j in jobs]
+        return [dict(id=j.id,url=j.url,title=j.title,company=j.company,location=j.location,source=j.source,salary=j.salary,contract_type=j.contract_type,location_check=location_verification_label(j.location),score=j.score,status=j.status,created_at=j.created_at.isoformat()) for j in jobs]
 
 @app.post("/api/search")
 async def search_jobs(user: str = Depends(require_auth), limit: int = 50):
@@ -372,14 +419,14 @@ async def search_jobs(user: str = Depends(require_auth), limit: int = 50):
         try:
             r=await client.get("https://jobicy.com/api/v2/remote-jobs",params={"count":limit,"geo":"brazil"}); r.raise_for_status()
             for j in r.json().get("jobs",[]):
-                found.append({"url":j.get("url"),"title":j.get("jobTitle") or "Vaga sem título","company":j.get("companyName") or "Empresa não informada","location":j.get("jobGeo") or "Remoto","source":"Jobicy","description":j.get("jobDescription") or j.get("jobExcerpt") or ""})
+                found.append({"url":j.get("url"),"title":j.get("jobTitle") or "Vaga sem título","company":j.get("companyName") or "Empresa não informada","location":j.get("jobGeo") or "Remoto","source":"Jobicy","description":j.get("jobDescription") or j.get("jobExcerpt") or "", "salary":j.get("salary") or j.get("jobSalary") or "", "contract_type":j.get("jobType") or ""})
         except Exception as e: errors.append("Jobicy: "+str(e)[:120])
         try:
             r=await client.get("https://remotive.com/api/remote-jobs",params={"limit":limit}); r.raise_for_status()
             for j in r.json().get("jobs",[]):
                 loc=j.get("candidate_required_location") or ""
                 if any(x in loc.lower() for x in ["worldwide","anywhere","brazil","brasil","south america","latin america","all countries","global"]):
-                    found.append({"url":j.get("url"),"title":j.get("title") or "Vaga sem título","company":j.get("company_name") or "Empresa não informada","location":loc or "Remoto","source":"Remotive","description":j.get("description") or ""})
+                    found.append({"url":j.get("url"),"title":j.get("title") or "Vaga sem título","company":j.get("company_name") or "Empresa não informada","location":loc or "Remoto","source":"Remotive","description":j.get("description") or "", "salary":j.get("salary") or "", "contract_type":j.get("job_type") or ""})
         except Exception as e: errors.append("Remotive: "+str(e)[:120])
     inserted=0
     filtered_existing=0
@@ -388,6 +435,7 @@ async def search_jobs(user: str = Depends(require_auth), limit: int = 50):
         # Re-score existing records too, so previously saved jobs that now fail filters disappear.
         for saved in db.scalars(select(Job)).all():
             new_score=score_job(saved.title,saved.location,p.target_roles,p.skills,p.resume_text,saved.description)
+            if salary_is_below_minimum(saved.salary, minimum_salary_brl(p.target_salary)): new_score=0
             if new_score <= 0 and saved.score > 0:
                 saved.score=0
                 filtered_existing += 1
@@ -396,6 +444,7 @@ async def search_jobs(user: str = Depends(require_auth), limit: int = 50):
         for j in found:
             if not j.get("url"): continue
             score=score_job(j["title"],j["location"],p.target_roles,p.skills,p.resume_text,j.get("description",""))
+            if salary_is_below_minimum(j.get("salary",""), minimum_salary_brl(p.target_salary)): score=0
             old=db.scalar(select(Job).where(Job.url==j["url"]))
             if score<=0:
                 if old and old.score>0:
@@ -404,9 +453,9 @@ async def search_jobs(user: str = Depends(require_auth), limit: int = 50):
                 continue
             old=db.scalar(select(Job).where(Job.url==j["url"]))
             if old:
-                old.title=j["title"]; old.company=j["company"]; old.location=j["location"]; old.source=j["source"]; old.description=j.get("description",""); old.score=score
+                old.title=j["title"]; old.company=j["company"]; old.location=j["location"]; old.source=j["source"]; old.description=j.get("description",""); old.salary=j.get("salary",""); old.contract_type=j.get("contract_type",""); old.score=score
             else:
-                db.add(Job(url=j["url"],title=j["title"],company=j["company"],location=j["location"],source=j["source"],description=j.get("description",""),score=score,status="Encontrada")); inserted+=1
+                db.add(Job(url=j["url"],title=j["title"],company=j["company"],location=j["location"],source=j["source"],description=j.get("description",""),salary=j.get("salary",""),contract_type=j.get("contract_type",""),score=score,status="Encontrada")); inserted+=1
         db.commit()
         total=db.scalar(select(Job).where(Job.score>0).with_only_columns(Job.id).order_by(None).subquery().select()) if False else len(db.scalars(select(Job.id).where(Job.score>0)).all())
     return {"new":inserted,"total":total,"checked":len(found),"filtered_existing":filtered_existing,"errors":errors}
@@ -430,8 +479,8 @@ def stats(user:str=Depends(require_auth)):
 @app.get("/api/export.csv")
 def export_csv(user:str=Depends(require_auth)):
     output=io.StringIO(); writer=csv.writer(output)
-    writer.writerow(["Vaga","Empresa","Localização","Fonte","Link","Compatibilidade","Status","Encontrada em"])
+    writer.writerow(["Vaga","Empresa","Localização","Salário informado","Vínculo informado","Fonte","Link","Compatibilidade","Status","Encontrada em"])
     with Session() as db:
         for j in db.scalars(select(Job).order_by(Job.score.desc())).all():
-            writer.writerow([j.title,j.company,j.location,j.source,j.url,j.score,j.status,j.created_at.isoformat() if j.created_at else ""])
+            writer.writerow([j.title,j.company,j.location,j.salary or "Não informado",j.contract_type or "Não informado",j.source,j.url,j.score,j.status,j.created_at.isoformat() if j.created_at else ""])
     return Response(content="\ufeff"+output.getvalue(),media_type="text/csv; charset=utf-8",headers={"Content-Disposition":"attachment; filename=vagas_ia.csv"})
