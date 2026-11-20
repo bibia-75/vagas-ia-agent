@@ -52,6 +52,8 @@ erDiagram
     applications ||--o{ application_status_history : registra
     applications ||--o{ candidate_reviews : recebe
     applications ||--o{ interview_schedules : agenda
+    applications ||--o{ application_attachments : anexa
+    interview_schedules ||--o{ interview_notes : anota
     applications ||--o| conversations : abre
     conversations ||--o{ messages : contem
     external_job_sources ||--o{ external_jobs : fornece
@@ -85,6 +87,8 @@ Legenda: **PK** chave primária, **FK** chave estrangeira, **U** único, **NN** 
 | deleted_at | timestamptz | |
 
 Índices: `U(email)`, `IX(status)`.
+
+Linhas de `users` **nunca são apagadas fisicamente**: na exclusão da conta viram registro anonimizado (seção 5.1), com o e-mail trocado por `deleted+<id>@deleted.invalid`. Assim o e-mail original fica livre para novo cadastro e as chaves estrangeiras continuam válidas.
 
 #### `user_sessions`
 | Coluna | Tipo | Regras |
@@ -433,7 +437,13 @@ Versões imutáveis. Editar cria nova versão.
 | joined_at | timestamptz | |
 | removed_at | timestamptz | |
 
-`U(organization_id, user_id)`. Regra no serviço: toda organização tem pelo menos um membro ativo com papel `owner`.
+`U(organization_id, user_id)`.
+
+Gatilho `organization_members_protect_owner` (BEFORE UPDATE), além da regra no serviço:
+
+- Se a linha antiga **ou** a nova tiver papel `owner`, a alteração só é aceita se quem altera for `owner` ativo da mesma organização (função `app_has_org_role(org, 'owner')`). Um `admin` não rebaixa, não suspende, não remove nem promove ninguém a `owner`.
+- A alteração é recusada se deixar a organização sem nenhum `owner` ativo.
+- Transferência de propriedade só pela função `org_transfer_ownership(org, novo_owner)`, executável apenas por um `owner`.
 
 #### `organization_invitations`
 | Coluna | Tipo | Regras |
@@ -542,7 +552,7 @@ Recrutadores atribuídos a uma vaga (para `job_scope = assigned_jobs`).
 | kind | enum `stage_kind` (`applied`, `screening`, `interview`, `assessment`, `offer`, `hired`, `rejected`) | NN |
 | position | smallint | NN |
 
-Etapas padrão criadas com a vaga: Recebidos, Em análise, Pré-selecionados, Entrevista, Proposta, Contratados, Reprovados. `U(job_posting_id, position)`.
+Etapas padrão criadas com a vaga: Recebidos, Em análise, Pré-selecionados, Entrevista, Proposta, Contratados, Reprovados. `U(job_posting_id, position) DEFERRABLE INITIALLY DEFERRED`, para permitir reordenar etapas numa única transação sem violar a unicidade no meio da troca.
 
 ### 3.7 Vagas externas
 
@@ -605,7 +615,8 @@ Etapas padrão criadas com a vaga: Recebidos, Em análise, Pré-selecionados, En
 | resume_version_id | uuid | FK resume_versions ON DELETE SET NULL |
 | current_stage_id | uuid | FK pipeline_stages ON DELETE RESTRICT |
 | status | enum `application_status` (`submitted`, `in_review`, `shortlisted`, `interviewing`, `offer`, `hired`, `rejected`, `withdrawn`) | NN |
-| candidate_snapshot | jsonb | NN: cópia imutável dos dados enviados (nome, contato, resumo, experiências, formação, competências) |
+| candidate_snapshot | jsonb | NN: cópia imutável dos dados profissionais enviados (nome, resumo, experiências, formação, competências), **sem contato** |
+| candidate_contact | jsonb | NN: e-mail e telefone enviados. **Sem privilégio de `SELECT` para `vagas_app`** (privilégio por coluna); lido só pela função `application_contact(id)`, que exige `applications.view_contact` |
 | screening_answers | jsonb | |
 | cover_letter | text | |
 | consent_id | uuid | FK consents (compartilhamento com a empresa) |
@@ -638,6 +649,25 @@ Etapas padrão criadas com a vaga: Recebidos, Em análise, Pré-selecionados, En
 #### `application_ai_summaries`
 `id, application_id FK CASCADE, organization_id NN, match_score smallint, breakdown jsonb (requisito a requisito, com evidência), summary text, model_info jsonb, ai_interaction_id FK, created_at`. Sempre exibido com o aviso de apoio à decisão.
 
+#### `application_attachments`
+Arquivos escolhidos pelo candidato no envio. São **cópias imutáveis** no prefixo da organização (`private/orgs/{org_id}/applications/{id}/`), para que a empresa tenha exatamente o que recebeu e para que o candidato possa apagar o original do cofre sem afetar o processo (RN-DOC-05).
+
+| Coluna | Tipo | Regras |
+| --- | --- | --- |
+| id | uuid | PK |
+| application_id | uuid | FK applications ON DELETE CASCADE, IX |
+| organization_id | uuid | NN (para RLS) |
+| source_document_id | uuid | FK documents ON DELETE SET NULL (original no cofre) |
+| kind | `document_kind` | NN |
+| storage_key | varchar(500) | NN, U |
+| original_filename | varchar(255) | NN |
+| mime_type | varchar(100) | NN |
+| size_bytes | bigint | NN |
+| sha256 | bytea | NN |
+| created_at | timestamptz | NN |
+
+Sem `UPDATE`. Exclusão só pelos procedimentos de retenção e de exclusão (seção 5).
+
 #### `interview_schedules`
 | Coluna | Tipo | Regras |
 | --- | --- | --- |
@@ -651,8 +681,12 @@ Etapas padrão criadas com a vaga: Recebidos, Em análise, Pré-selecionados, En
 | location_or_link | varchar(500) | |
 | status | enum (`proposed`, `confirmed`, `rescheduled`, `canceled`, `completed`, `no_show`) | NN |
 | candidate_response_at | timestamptz | |
-| notes_internal | text | só a organização vê |
 | created_at, updated_at | timestamptz | |
+
+O candidato lê as entrevistas da própria candidatura. Por isso **anotações internas não ficam nesta tabela**.
+
+#### `interview_notes` (só a organização)
+`id, interview_id FK interview_schedules ON DELETE CASCADE, organization_id NN, author_user_id FK users ON DELETE SET NULL, body text NN, created_at, updated_at`.
 
 #### `saved_jobs`
 | Coluna | Tipo | Regras |
@@ -827,6 +861,8 @@ Alterar preço cria um novo plano (ou nova versão); assinaturas existentes mant
 | actor_user_id | uuid | IX |
 | actor_platform_role | `platform_role` | |
 | organization_id | uuid | IX |
+| subject_user_id | uuid | IX: titular cujos dados foram acessados ou afetados |
+| visible_to_subject | boolean | NN, padrão `false`: aparece no "Histórico de acessos" do titular |
 | action | varchar(80) | NN (ex.: `document.download`, `member.role_changed`, `admin.document_access`) |
 | target_type | varchar(40) | |
 | target_id | uuid | |
@@ -835,99 +871,302 @@ Alterar preço cria um novo plano (ou nova versão); assinaturas existentes mant
 | user_agent | varchar(300) | |
 | metadata | jsonb | sem dados pessoais desnecessários |
 
+`vagas_app` e `vagas_worker` têm só `SELECT` e `INSERT`; nenhum papel da aplicação tem `UPDATE` ou `DELETE`. Um gatilho `BEFORE UPDATE OR DELETE` recusa qualquer alteração, inclusive de papéis com mais privilégio (testado: T14, T21). Leitura conforme a matriz da seção 4.6.
+
 Particionamento mensal quando passar de alguns milhões de linhas. Retenção: 5 anos para ações administrativas e de segurança; 6 meses mínimos para registros de acesso à aplicação (Marco Civil da Internet, art. 15).
 
+#### `admin_access_grants`
+Concessão temporária para um administrador ver dados privados de um titular (RN-ADM-01).
+
+| Coluna | Tipo | Regras |
+| --- | --- | --- |
+| id | uuid | PK |
+| admin_user_id | uuid | FK users, NN |
+| target_user_id | uuid | FK users, NN |
+| justification | varchar(500) | NN, mínimo 20 caracteres |
+| created_at | timestamptz | NN |
+| expires_at | timestamptz | NN, no máximo 30 minutos após `created_at` |
+
+Cada concessão gera registro em `audit_logs` com `visible_to_subject = true`.
+
+#### `access_logs` (registros de acesso à aplicação, Marco Civil da Internet)
+| Coluna | Tipo | Regras |
+| --- | --- | --- |
+| id | bigint identity | PK |
+| occurred_at | timestamptz | NN (data e hora, UTC) |
+| user_id | uuid | quando houver usuário autenticado |
+| session_id | uuid | |
+| ip_address | inet | NN (IP real do cliente, obtido pela cadeia de confiança do proxy; SECURITY_AND_LGPD.md, seção 4.1) |
+| ip_port | integer | porta de origem, quando o Render a informar |
+| event | varchar(40) | NN: `login`, `logout`, `session_ip_changed`, `session_activity` (no máximo 1 por hora por sessão), `signup`, `password_reset` |
+
+- `vagas_app`: só `INSERT`. Sem leitura.
+- `vagas_worker`: `SELECT` e `DELETE` para retenção.
+- Consulta a pedido de autoridade (ordem judicial): só pela função `access_logs_lookup(...)`, por administrador, com justificativa e registro em auditoria.
+- Partição mensal; partições com mais de 6 meses (prazo mínimo legal) são removidas, salvo pedido de preservação. **Prazo e eventos registrados precisam de validação jurídica antes da produção (D-21).**
+
+#### `storage_deletion_queue` (saída transacional para apagar arquivos)
+`id, storage_key varchar(500) NN, reason varchar(40) NN, requested_at timestamptz NN, deleted_at timestamptz, attempts smallint NN default 0, last_error text`.
+
+Toda exclusão de arquivo é **enfileirada na mesma transação** que apaga ou anonimiza o registro no banco. O worker apaga o objeto no storage depois do commit, com novas tentativas. Assim banco e storage nunca ficam inconsistentes por uma falha no meio.
+
 ## 4. Isolamento e Row Level Security
+
+> O núcleo deste desenho foi **testado num PostgreSQL 16 real** com o protótipo em [`docs/prototypes/`](prototypes/README.md) (22 testes executados conectado como `vagas_app`, mais testes de mutação). O que ainda não foi testado está marcado como "testar na Fase 1".
 
 ### 4.1 Estratégia
 
 Banco compartilhado, esquema único, coluna de dono em cada tabela (`user_id` ou `organization_id`). Três barreiras:
 
-1. **Aplicação:** repositories sempre filtram pelo dono recebido do contexto autenticado.
-2. **RLS no PostgreSQL:** políticas usam variáveis de sessão definidas no início de cada transação.
-3. **Testes de isolamento automatizados** (seção 6).
+1. **Aplicação:** repositories sempre filtram pelo dono recebido do contexto autenticado, e cada endpoint confere a permissão.
+2. **RLS no PostgreSQL**, forçada (`ENABLE` + `FORCE ROW LEVEL SECURITY`) em toda tabela com dono: mesmo se a aplicação esquecer um filtro, o banco não devolve dados de outro dono.
+3. **Testes de isolamento automatizados**, sempre conectados com o mesmo papel da aplicação (seção 4.7).
 
 ### 4.2 Papéis do banco
 
-| Papel | Uso | Permissões |
-| --- | --- | --- |
-| `vagas_owner` | dono do esquema, só para migrações | tudo |
-| `vagas_app` | conexões da API e dos workers | `SELECT/INSERT/UPDATE/DELETE` nas tabelas, **sem** `SUPERUSER` e **sem** `BYPASSRLS`; só `INSERT` em `audit_logs`. A API verifica isso ao iniciar e não sobe se o papel for privilegiado |
-| `vagas_readonly` | relatórios e suporte técnico | `SELECT` com RLS |
+| Papel | Login | Uso | Regras |
+| --- | --- | --- | --- |
+| `vagas_owner` | sim | Só migrações (Alembic) | Dono das tabelas. Também fica sob RLS forçada |
+| `vagas_app` | sim | API | **Sem `SUPERUSER` e sem `BYPASSRLS`**. Privilégios por tabela conforme a matriz. A API verifica isso ao iniciar e se recusa a subir se o papel for privilegiado (testado: T01) |
+| `vagas_worker` | sim | Workers Celery e cron | Sem `SUPERUSER` e sem `BYPASSRLS`. Credencial diferente da API. As políticas de "sistema" são dirigidas a este papel (`TO vagas_worker`), e não a uma variável que a API poderia definir |
+| `vagas_ctx_definer` | não | Dono das funções de contexto e das ações restritas do candidato | Privilégios mínimos: só `SELECT` (e `UPDATE` onde a função precisa) nas tabelas que suas funções consultam |
+| `vagas_auth_definer` | não | Dono das funções de autenticação | Só `SELECT`/`INSERT` em `users`, `user_sessions`, `auth_tokens`, `login_attempts` |
+| `vagas_readonly` | sim | Suporte técnico e relatórios internos | `SELECT` sob RLS; sem acesso a colunas de contato nem a `access_logs` |
 
-### 4.3 Variáveis de contexto
+Os papéis sem login acessam suas tabelas por **políticas dirigidas a eles** (`CREATE POLICY ... TO vagas_ctx_definer USING (true)`), o que dispensa `BYPASSRLS` e superusuário. Sem isso, uma função como `app_is_active_member()` leria `organization_members` sob a própria política que a chama e entraria em recursão infinita (problema encontrado e corrigido no protótipo).
+
+**Testar na Fase 1 (tarefa 1.7):** se o Render Postgres permite criar esses papéis. Se não permitir, a Fase 1 para e a alternativa vai para aprovação.
+
+### 4.3 Variáveis de contexto e funções auxiliares
 
 No início de cada transação, a API executa:
 
 ```sql
-SELECT set_config('app.user_id', :user_id, true);
-SELECT set_config('app.org_id', :org_id_or_empty, true);
-SELECT set_config('app.platform_role', :role, true);
+SELECT set_config('app.user_id', :user_id_or_empty, true),
+       set_config('app.org_id',  :org_id_or_empty,  true);
 ```
 
-O terceiro parâmetro `true` limita o valor à transação, evitando vazamento entre requisições no pool de conexões.
+O terceiro parâmetro `true` limita o valor à transação.
 
-### 4.4 Exemplos de políticas
+**Comportamento testado (T02):** depois que uma transação define a variável, as transações seguintes na mesma conexão do pool recebem **texto vazio**, não NULL. Uma conversão direta `current_setting('app.user_id', true)::uuid` falha com `invalid input syntax for type uuid: ""`. Por isso **nenhuma política lê `current_setting` diretamente**: todas usam as funções abaixo.
 
 ```sql
--- Dados pessoais: só o dono
-ALTER TABLE certificates ENABLE ROW LEVEL SECURITY;
-ALTER TABLE certificates FORCE ROW LEVEL SECURITY;
-CREATE POLICY certificates_owner ON certificates
-  USING (user_id = current_setting('app.user_id', true)::uuid)
-  WITH CHECK (user_id = current_setting('app.user_id', true)::uuid);
+CREATE FUNCTION app_current_user_id() RETURNS uuid
+LANGUAGE sql STABLE SET search_path = pg_catalog
+AS $$ SELECT nullif(current_setting('app.user_id', true), '')::uuid $$;
 
--- Dados de organização: só membros ativos da organização do contexto
-CREATE POLICY job_postings_org ON job_postings
-  USING (organization_id = nullif(current_setting('app.org_id', true), '')::uuid
-         AND app_is_active_member(organization_id));
-
--- Vagas publicadas: leitura pública
-CREATE POLICY job_postings_public_read ON job_postings FOR SELECT
-  USING (status = 'published');
-
--- Candidaturas: candidato vê as próprias; organização vê as suas
-CREATE POLICY applications_candidate ON applications FOR SELECT
-  USING (candidate_user_id = current_setting('app.user_id', true)::uuid);
-CREATE POLICY applications_org ON applications
-  USING (organization_id = nullif(current_setting('app.org_id', true), '')::uuid
-         AND app_is_active_member(organization_id));
+CREATE FUNCTION app_current_org_id() RETURNS uuid
+LANGUAGE sql STABLE SET search_path = pg_catalog
+AS $$ SELECT nullif(current_setting('app.org_id', true), '')::uuid $$;
 ```
 
-`app_is_active_member(org uuid)` é uma função `SECURITY DEFINER` que consulta `organization_members` com o `app.user_id` atual.
+| Função | Tipo | Dono | O que faz |
+| --- | --- | --- | --- |
+| `app_current_user_id()` | invoker | `vagas_owner` | Usuário do contexto ou NULL |
+| `app_current_org_id()` | invoker | `vagas_owner` | Organização do contexto ou NULL |
+| `app_platform_role()` | definer | `vagas_ctx_definer` | Papel de plataforma **lido da tabela `users`** para o usuário do contexto. Nunca vem de variável enviada pela aplicação (testado: T15b) |
+| `app_is_active_member(org)` | definer | `vagas_ctx_definer` | Usuário do contexto é membro ativo da organização |
+| `app_has_org_permission(org, perm)` | definer | `vagas_ctx_definer` | Membro ativo + organização igual à do contexto + papel com a permissão; valida o formato da chave da permissão (testado: T05, T06, T07) |
+| `app_has_org_role(org, role)` | definer | `vagas_ctx_definer` | Usado na proteção do `owner` (testar na Fase 1) |
+| `app_admin_can_access_user(target)` | definer | `vagas_ctx_definer` | Admin com concessão vigente em `admin_access_grants` (testado: T15a) |
+| `org_member_directory(org)` | definer | `vagas_ctx_definer` | Nome e papel dos colegas, só para membro ativo (testado: T17) |
+| `talent_search(org, filtros)` | definer | `vagas_ctx_definer` | Perfis com `talent_pool_visibility = visible_to_companies`, **só colunas profissionais, sem contato**, exige `candidates.search` (testar na Fase 5) |
+| `application_contact(app_id)` | definer | `vagas_ctx_definer` | Contato do candidato, exige `applications.view_contact` (testar na Fase 5) |
+| `candidate_withdraw_application(app_id)` | definer | `vagas_ctx_definer` | Única alteração que o candidato faz na candidatura (testado: T16) |
+| `candidate_respond_interview(id, resposta)` | definer | `vagas_ctx_definer` | Confirmar ou pedir remarcação (testar na Fase 5) |
+| `conversation_mark_read(id)` | definer | `vagas_ctx_definer` | Marca leitura do lado de quem chama (testar na Fase 5) |
+| `org_create(...)` | definer | `vagas_ctx_definer` | Cria organização e o primeiro `owner` na mesma transação (testar na Fase 2) |
+| `invitation_accept(token_hash)` | definer | `vagas_ctx_definer` | Aceita convite se o e-mail do usuário do contexto for o do convite (testar na Fase 2) |
+| `org_transfer_ownership(org, user)` | definer | `vagas_ctx_definer` | Só `owner` executa (testar na Fase 2) |
+| `usage_reserve(...)`, `usage_release(...)` | definer | `vagas_ctx_definer` | Reserva atômica de limite do plano (testar na Fase 7) |
 
-Tarefas de sistema (importação de vagas, retenção) rodam com contexto `app.platform_role = 'system'` e políticas específicas, nunca com `BYPASSRLS` no papel da aplicação.
+### 4.4 Funções de autenticação
 
-### 4.5 Tabelas sem RLS
+Login, sessão e recuperação de senha acontecem **antes** de existir usuário no contexto, então a RLS fecharia as tabelas. Elas são lidas só por funções específicas:
 
-Catálogos públicos ou sem dado pessoal: `permissions`, `skills`, `plans`, `legal_documents`, `external_job_sources`, `external_jobs`, `external_job_import_runs`.
+| Função | O que faz | Validação |
+| --- | --- | --- |
+| `auth_lookup_login(email)` | Devolve id, hash e status para conferir a senha na aplicação | E-mail com formato válido e até 254 caracteres; entrada inválida devolve vazio, sem erro revelador (testado: T11) |
+| `auth_resolve_session(token_hash)` | Devolve sessão e usuário se a sessão estiver válida, não revogada e o usuário ativo | Hash com exatamente 32 bytes (testado: T12) |
+| `auth_register_user(id, email, hash, nome)` | Cria usuário | Hash precisa ser Argon2id; e-mail e nome válidos; e-mail duplicado não gera erro (evita descobrir contas) (testado: T13) |
+| `auth_issue_token(user, purpose)` e `auth_consume_token(hash, purpose)` | Tokens de verificação e redefinição, uso único | Finalidade em lista fechada; expiração (testar na Fase 2) |
+| `auth_record_login_attempt(...)` e `auth_recent_failures(email, ip)` | Limites de tentativa | (testar na Fase 2) |
 
-## 5. Retenção (resumo)
+### 4.5 Regras para toda função `SECURITY DEFINER`
+
+1. `SET search_path = pg_catalog, public` (ou mais restrito) na própria definição, e nomes de tabela qualificados com o esquema (testado: T19).
+2. Dono é um papel **sem login, sem superusuário e sem `BYPASSRLS`**, com privilégio só nas tabelas que a função usa (testado: T19).
+3. `REVOKE EXECUTE ... FROM PUBLIC`; `GRANT EXECUTE` só para o papel que precisa.
+4. Todo parâmetro validado (formato, tamanho, lista fechada) antes de qualquer consulta; entrada inválida devolve vazio ou erro genérico, sem detalhe interno.
+5. A função confere por conta própria quem chama (`app_current_user_id()`, permissão, contexto); nunca confia num parâmetro que diga quem é o usuário.
+6. Faz uma coisa só. Ações do candidato que mudam um único campo (retirar candidatura, responder entrevista) são funções, e o candidato **não tem política de `UPDATE`** na tabela (testado: T16), porque a RLS controla linhas, não colunas.
+
+### 4.6 Matriz completa de acesso por tabela
+
+**Legenda:**
+- **P**: o próprio titular (`user_id = app_current_user_id()`)
+- **O(perm)**: membro ativo da organização do contexto, com a permissão indicada (`app_has_org_permission`)
+- **O**: membro ativo da organização do contexto, qualquer papel
+- **C**: candidato dono da candidatura relacionada
+- **Pub**: qualquer pessoa, inclusive sem login
+- **W**: papel `vagas_worker`
+- **A**: administrador da plataforma (papel lido do banco); **Ag**: administrador com concessão vigente para aquele titular
+- **F(nome)**: só por meio da função indicada
+- **ninguém**: nenhum papel da aplicação tem o privilégio
+
+Situação do teste: ✅ testado no protótipo · 🔜 testar na fase indicada.
+
+| Tabela | SELECT | INSERT | UPDATE | DELETE | Teste |
+| --- | --- | --- | --- | --- | --- |
+| users | P; A (dados de cadastro); F(auth_lookup_login, org_member_directory) | F(auth_register_user) | P (campos permitidos pela API); W (anonimização) | ninguém (vira registro anonimizado) | ✅ T11, T13 · 🔜 2 |
+| user_sessions | P; F(auth_resolve_session) | P (após login) | P (atividade, revogação) | P; W (expiradas) | ✅ T12 · 🔜 2 |
+| auth_tokens | F(auth_consume_token) | F(auth_issue_token) | F(auth_consume_token) | W (expirados) | 🔜 2 |
+| login_attempts | F(auth_recent_failures) | F(auth_record_login_attempt) | ninguém | W (90 dias) | 🔜 2 |
+| user_profiles, user_preferences | P; Ag; F(talent_search) | P | P | W (exclusão de conta) | 🔜 3 |
+| experiences, education, certificates, user_skills, certificate_skills, user_languages, saved_answers | P; Ag | P | P | P; W | 🔜 3 |
+| upload_batches | P | P | W (progresso) | W | 🔜 3 |
+| documents (pessoais) | P; Ag; W (processamento) | P | P (tipo); W (status) | P; W | ✅ T03, T04, T15a · 🔜 3 |
+| documents (da organização) | O | O(org.profile.update) | O(org.profile.update); W | O(org.profile.update); W | ✅ T10a · 🔜 2 |
+| document_extractions | P | W | P (revisão) | P; W | 🔜 3 |
+| resumes, resume_versions, ats_analyses | P; Ag | P; W (geração por IA) | P (só `resumes`; versões são imutáveis) | P; W | 🔜 3 e 6 |
+| skills | Pub | W; F(skill_upsert) | A | ninguém | 🔜 3 |
+| organizations | O; Pub (status `active`, campos públicos via API); A | F(org_create) | O(org.profile.update); A (suspensão); W (exclusão) | ninguém (vira registro encerrado) | ✅ T05 · 🔜 2 |
+| company_profiles | O; Pub (org ativa) | F(org_create) | O(org.profile.update); W | ninguém | 🔜 2 |
+| company_verifications | O(org.verification.submit); A | O(org.verification.submit) | A | ninguém | 🔜 2 |
+| permissions, plans, legal_documents | Pub | ninguém (migração ou A) | A (plans, legal_documents) | ninguém | 🔜 7 |
+| organization_roles, role_permissions | O (papéis da própria org e de sistema) | O(org.roles.manage) (só da própria org) | O(org.roles.manage) | O(org.roles.manage) (papel sem membros) | 🔜 2 e 7 |
+| organization_members | P (os próprios vínculos); O | F(org_create, invitation_accept) | O(org.members.manage) + gatilho de proteção do `owner` | ninguém (status `removed`) | ✅ T07, T17 · 🔜 2 |
+| organization_invitations | O(org.members.invite) | O(org.members.invite) | O(org.members.invite) (revogar); F(invitation_accept) | W (expirados) | 🔜 2 |
+| job_postings | Pub (`published`); O(jobs.view) | O(jobs.create) | O(jobs.update); W (expiração) | ninguém (arquivar) | ✅ T05, T07, T20 · 🔜 4 |
+| job_requirements, screening_questions | Pub (vaga publicada); O(jobs.view) | O(jobs.update) | O(jobs.update) | O(jobs.update) | 🔜 4 |
+| pipeline_stages | O(jobs.view) | O(jobs.update) | O(jobs.update) | O(jobs.update) (sem candidatos) | 🔜 4 |
+| job_team_members | O(jobs.view) | O(jobs.assign_team) | ninguém | O(jobs.assign_team) | 🔜 4 |
+| job_drafts | O(jobs.create) | O(jobs.create) | O(jobs.create); W (geração) | O(jobs.create) | 🔜 4 |
+| external_job_sources | Pub (habilitadas); A | A | A; W (`last_run_at`) | ninguém | 🔜 4 |
+| external_jobs, external_job_import_runs | Pub (vagas ativas); A | W | W | W | 🔜 4 |
+| saved_jobs, external_application_trackers | P | P | P | P | 🔜 4 e 5 |
+| applications | C; O(applications.view) | C (vaga publicada, em nome próprio, organização da vaga) | O(applications.move); F(candidate_withdraw_application); W (retenção) | ninguém | ✅ T05, T06, T08, T09, T16 · 🔜 5 |
+| applications.candidate_contact (coluna) | F(application_contact) com O(applications.view_contact); C | C (com a candidatura) | W (anonimização) | n/a | 🔜 5 |
+| application_attachments | C; O(applications.view) (download exige `documents.download` na API) | C (no envio, candidatura `submitted`) | ninguém | W | ✅ T10 · 🔜 5 |
+| application_status_history | O(applications.view); C (só `visible_to_candidate`) | O(applications.move); F(candidate_withdraw_application) | ninguém | ninguém | 🔜 5 |
+| candidate_reviews | O(applications.review) | O(applications.review) | O(applications.review) (só o autor) | O(applications.review) (só o autor) | 🔜 5 |
+| application_ai_summaries | O(applications.view) | W | ninguém | W | 🔜 5 |
+| interview_schedules | O(applications.view); C | O(interviews.manage) | O(interviews.manage); F(candidate_respond_interview) | ninguém (status `canceled`) | ✅ T09 · 🔜 5 |
+| interview_notes | O(interviews.manage) | O(interviews.manage) | O(interviews.manage) (só o autor) | O(interviews.manage) (só o autor) | 🔜 5 |
+| conversations | C; O(applications.view) | O(messages.send); C | ninguém | W | 🔜 5 |
+| messages | C; O(applications.view) | C (lado candidato, remetente = P); O(messages.send) (lado organização) | F(conversation_mark_read); F(message_hide) (até 5 min, só o autor) | W | 🔜 5 |
+| notifications | P | W | P (marcar como lida) | P; W | 🔜 5 |
+| ai_interactions | A | P ou O (registro do próprio contexto); W | ninguém | W (retenção) | 🔜 3 |
+| usage_counters | P; O(org.billing.view) | F(usage_reserve) | F(usage_reserve, usage_release) | W | 🔜 7 |
+| subscriptions | P; O(org.billing.view); A | P ou O(org.billing.manage) (status `pending`) | W (webhooks, reconciliação) | ninguém | 🔜 7 |
+| payments | P; O(org.billing.view); A | W | W | ninguém | 🔜 7 |
+| webhook_events | A; W | `vagas_app` sem contexto (endpoint de webhook) | W | W (retenção) | 🔜 7 |
+| consents | P; Ag | P | P (revogação) | ninguém | 🔜 2 |
+| data_subject_requests | P; A | P | W; A | ninguém | 🔜 7 |
+| admin_access_grants | A | A (em nome próprio) | ninguém | ninguém | ✅ T15a · 🔜 7 |
+| audit_logs | O(org.audit.view); P (titular, `visible_to_subject`); A | `vagas_app`; W | **ninguém** (sem privilégio + gatilho) | **ninguém** (sem privilégio + gatilho) | ✅ T14, T21 |
+| access_logs | W; F(access_logs_lookup) por A com justificativa | `vagas_app` | ninguém | W (retenção) | ✅ T18, T22 · 🔜 2 |
+| storage_deletion_queue | W | `vagas_app`; W | W | W | 🔜 3 |
+
+Regras que ficam na API (não na RLS) e precisam de testes próprios:
+- Escopo de vagas atribuídas (`job_scope = assigned_jobs`) para recrutadores.
+- Distinção entre `applications.move`, `applications.reject` e `applications.hire` dentro do mesmo `UPDATE`.
+- Campos permitidos em cada `UPDATE` do titular (ex.: o usuário não altera o próprio `platform_role`; reforçado por privilégio de coluna em `users.platform_role` e `users.status`).
+- Janela de resposta em mensagens (RN-MSG-02).
+
+### 4.7 Testes de isolamento obrigatórios
+
+1. Todos os testes conectam com `vagas_app` (ou `vagas_worker`, para tarefas de sistema), **nunca** com `vagas_owner` ou superusuário. Um teste falha se a conexão de teste tiver `SUPERUSER` ou `BYPASSRLS`.
+2. Para cada linha da matriz, um teste por célula: o ator permitido consegue; os demais não (leitura devolve zero linhas; escrita é recusada ou afeta zero linhas).
+3. Fluxos de acesso cruzado obrigatórios (os 13 primeiros já comprovados no protótipo, a repetir no pytest):
+   - contexto vazio após transação anterior (T02)
+   - usuário contra usuário (T03, T04)
+   - organização contra organização e contexto forjado (T05, T06)
+   - membro removido (T07)
+   - candidatura válida e inválida (T08)
+   - candidato e entrevista própria e alheia (T09)
+   - anexos: empresa da vaga, outra empresa, candidato e cofre (T10)
+   - login, sessão e cadastro sem contexto (T11, T12, T13)
+   - auditoria: gravação, imutabilidade e leitura por organização, titular e admin (T14, T21)
+   - admin com e sem concessão e papel forjado (T15)
+   - candidato só retira, não altera status (T16)
+   - diretório da equipe (T17)
+   - `access_logs` só gravação (T18, T22)
+   - banco de talentos sem contato e só perfis visíveis (Fase 5)
+   - contato do candidato negado ao `viewer` (Fase 5)
+   - mensagens: candidato só na própria conversa, empresa só nas suas (Fase 5)
+   - histórico: candidato só vê eventos visíveis (Fase 5)
+   - proteção do `owner` contra `admin` (Fase 2)
+   - procedimentos de exclusão de conta e de organização (Fases 2 e 7)
+4. Testes de mutação periódicos: remover uma condição de política deve fazer pelo menos um teste falhar.
+
+### 4.8 Tabelas sem RLS
+
+Somente catálogos sem dado pessoal e com escrita restrita por privilégio: `permissions` e `skills` (escrita só por migração, W ou A). As demais tabelas da matriz têm RLS forçada.
+
+## 5. Procedimentos de exclusão
+
+Os dois procedimentos rodam no worker, **numa única transação** cada, chamando funções `account_delete_finalize(user_id)` e `org_delete_finalize(org_id)`. Arquivos são apagados pela `storage_deletion_queue` depois do commit. Se qualquer passo falhar, nada é aplicado e a tarefa tenta de novo.
+
+### 5.1 Exclusão de conta (RN-ACC-06)
+
+**Pedido:** status `pending_deletion`, todas as sessões revogadas, e-mail de confirmação com link para cancelar. Bloqueado se a pessoa for o único `owner` de uma organização com outros membros (RN-ACC-07).
+
+**Após 7 dias, em uma transação:**
+
+1. Candidaturas em andamento: status `withdrawn`, com registro no histórico ("candidato encerrou a conta").
+2. Todas as candidaturas: `candidate_snapshot` reduzido a `{"anonymized": true}`, `candidate_contact` apagado, `screening_answers` e `cover_letter` apagados, `candidate_user_id` = NULL; anexos enfileirados para exclusão e removidos. A empresa continua vendo que houve uma candidatura (para métricas), sem dado pessoal. **Validar com advogado** se a empresa, como controladora, pode exigir retenção maior em algum caso.
+3. Mensagens enviadas pelo candidato: corpo trocado por "Mensagem removida pelo autor".
+4. Apagados: perfil, preferências, experiências, formação, certificados, competências, idiomas, respostas salvas, currículos e versões, análises ATS, documentos (arquivos na fila), lotes, extrações, vagas salvas, acompanhamentos externos, notificações, sessões, tokens.
+5. Vínculos com organizações: status `removed`.
+6. `users`: e-mail = `deleted+<id>@deleted.invalid`, nome = "Conta excluída", telefone = NULL, `password_hash` = valor inutilizável, `mfa_secret_encrypted` = NULL, status `deleted`, `deleted_at` = agora. **O e-mail original fica livre para novo cadastro.**
+7. Mantidos, por obrigação legal ou defesa de direitos, apontando para o registro anonimizado: `consents` (prova de aceite), `payments` e `subscriptions` (fiscal), `audit_logs` e `access_logs` (segurança e Marco Civil), cada um com sua retenção. **Prazos a validar juridicamente (D-21).**
+8. Registro em `audit_logs` (`account.deleted`) e em `data_subject_requests` (concluído).
+
+### 5.2 Exclusão de organização (RN-ORG-07)
+
+**Pedido** (só `owner`, com senha): status `pending_deletion`; vagas encerradas com motivo `canceled`; candidatos com processos abertos notificados, com prazo para baixar as mensagens trocadas; assinatura cancelada ao fim do período; só o `owner` acessa, para cancelar o pedido.
+
+**Após 30 dias, em uma transação:**
+
+1. Candidaturas: mantidas como histórico do candidato com o mínimo (vaga, empresa, datas, status final). Apagados: `candidate_snapshot` (reduzido), `candidate_contact`, respostas, avaliações internas, resumos de IA, anotações de entrevista, conversas e mensagens; anexos para a fila de exclusão.
+2. Vagas: mantidas como registro encerrado com título e datas; descrição, requisitos, perguntas e rascunhos de IA apagados.
+3. Membros: status `removed`; convites apagados.
+4. Perfil da empresa, documentos da organização (fila), verificações: apagados.
+5. `organizations`: status `deleted`, `cnpj` = NULL (CNPJ liberado para novo cadastro), nome mantido com o sufixo "(encerrada)" para o histórico dos candidatos.
+6. Mantidos: `payments`, `subscriptions` (fiscal) e `audit_logs` (segurança).
+7. Registro em `audit_logs` (`organization.deleted`).
+
+As linhas de `organizations`, `job_postings` e `applications` **não são apagadas fisicamente** nesse momento: isso mantém as chaves estrangeiras válidas (a regra `ON DELETE RESTRICT` de candidaturas para vagas continua valendo) e preserva o histórico do candidato. A remoção definitiva dessas linhas acontece pela retenção (seção 6), depois de anonimizadas.
+
+## 6. Retenção (resumo)
 
 | Dado | Retenção |
 | --- | --- |
 | Conta inativa | aviso após 24 meses sem login; exclusão 30 dias depois do aviso, se não houver retorno |
 | Documentos e currículos | enquanto a conta existir ou até o usuário excluir |
-| Candidatura | até 12 meses após o encerramento da vaga, depois anonimizada (campo `retention_until`) |
+| Candidatura | até 12 meses após o encerramento da vaga, depois anonimizada (campo `retention_until`); a linha anonimizada é removida após mais 24 meses |
+| Registros encerrados de `organizations`, `job_postings` e `users` anonimizados | removidos fisicamente quando não houver mais candidaturas, pagamentos ou auditoria que dependam deles |
 | Uploads em quarentena não confirmados | 24 h |
 | Exportações LGPD | 7 dias |
 | `login_attempts` | 90 dias |
-| Registros de acesso à aplicação | 6 meses (mínimo legal) |
+| Registros de acesso à aplicação (`access_logs`) | 6 meses (mínimo do Marco Civil, art. 15); prazo e eventos a validar juridicamente |
 | `audit_logs` de segurança e administração | 5 anos |
 | `ai_interactions` (metadados) | 12 meses |
 | Pagamentos | 5 anos (obrigações fiscais; confirmar com contador) |
 
 Detalhes e bases legais em SECURITY_AND_LGPD.md.
 
-## 6. Testes obrigatórios do modelo
+## 7. Testes obrigatórios do modelo
 
 1. `alembic upgrade head` em banco vazio e `alembic downgrade -1` da última migração sem erro.
 2. `alembic check` sem diferenças entre modelos e migrações.
-3. Para cada tabela com RLS: teste que usuário A não lê, não altera e não apaga registro de B, consultando o banco diretamente com o papel `vagas_app` (o mesmo da aplicação; nunca com o papel de migração).
-4. Para cada tabela de organização: membro da organização X não acessa dados de Y; membro removido perde acesso imediatamente.
+3. Todos os testes da seção 4.7, conectados com `vagas_app` ou `vagas_worker` (nunca com o papel de migração ou superusuário).
+4. Teste de que a API não sobe com papel `SUPERUSER` ou `BYPASSRLS`.
 5. Restrições `CHECK` e únicas testadas com casos válidos e inválidos.
 
-## 7. Sementes
+## 8. Sementes
 
+- O protótipo em `docs/prototypes/` é referência de SQL testado, **não** é migração; a Fase 1 reescreve tudo em Alembic.
 - Migração de dados semeia: `permissions`, papéis de sistema e suas permissões, `plans` iniciais (inativos até aprovação dos preços), `legal_documents` em rascunho.
 - Dados fictícios de desenvolvimento ficam em `backend/scripts/seed_dev.py`, nunca em migração, e todos os registros usam domínio `@exemplo.invalid`.

@@ -1,6 +1,6 @@
 # Permissões e papéis
 
-> Quem pode fazer o quê. Implementado em `backend/app/core/authz.py` e reforçado por RLS (DATABASE_DESIGN.md, seção 4).
+> Quem pode fazer o quê. Implementado em `backend/app/core/authz.py` e reforçado por RLS. A matriz por tabela e operação (SELECT, INSERT, UPDATE, DELETE) está em [DATABASE_DESIGN.md, seção 4.6](DATABASE_DESIGN.md#46-matriz-completa-de-acesso-por-tabela).
 
 ## 1. Três níveis de acesso
 
@@ -45,7 +45,8 @@ Uma mesma pessoa pode ser candidata e membro de várias organizações. As permi
 | `jobs.publish` | Publicar, pausar e reabrir vagas |
 | `jobs.close` | Encerrar e arquivar vagas |
 | `jobs.assign_team` | Atribuir recrutadores a vagas |
-| `applications.view` | Ver candidaturas e currículos das vagas acessíveis |
+| `applications.view` | Ver candidaturas e currículos das vagas acessíveis, **sem** e-mail e telefone |
+| `applications.view_contact` | Ver e-mail e telefone do candidato (lidos só pela função `application_contact`) |
 | `applications.move` | Mover candidatos entre etapas |
 | `applications.reject` | Reprovar candidatos |
 | `applications.hire` | Marcar como contratado |
@@ -80,6 +81,7 @@ Uma mesma pessoa pode ser candidata e membro de várias organizações. As permi
 | jobs.close | ✔ | ✔ | ✔ | | |
 | jobs.assign_team | ✔ | ✔ | ✔ | | |
 | applications.view | ✔ | ✔ | ✔ | ◐ | ✔ |
+| applications.view_contact | ✔ | ✔ | ✔ | ◐ | |
 | applications.move | ✔ | ✔ | ✔ | ◐ | |
 | applications.reject | ✔ | ✔ | ✔ | ◐ | |
 | applications.hire | ✔ | ✔ | ✔ | | |
@@ -93,8 +95,11 @@ Uma mesma pessoa pode ser candidata e membro de várias organizações. As permi
 
 Regras complementares:
 
-- Só um `owner` pode promover outro membro a `owner` ou transferir a propriedade.
+- **`admin` não pode rebaixar, suspender, remover nem transferir a propriedade do `owner`**, nem promover alguém a `owner`. Só um `owner` altera vínculos com papel `owner`.
+- Transferência de propriedade só pela função `org_transfer_ownership`, executada por um `owner`, com confirmação por senha.
 - O último `owner` ativo não pode ser removido, rebaixado nem sair.
+- Essas três regras valem na API **e** no banco (gatilho `organization_members_protect_owner`, DATABASE_DESIGN.md seção 3.5), para que um erro na API não consiga violá-las.
+- **`viewer` tem acesso mínimo a dados pessoais:** vê o currículo e o resumo profissional das candidaturas, mas **não** vê e-mail nem telefone (`applications.view_contact`) e não baixa anexos (`documents.download`). O contato fica numa coluna sem privilégio de leitura para a aplicação, liberada só pela função que exige a permissão.
 - Papéis personalizados (Fase 7, plano Business) são combinações do catálogo acima; nunca criam permissões novas.
 - Um membro não pode conceder a outro uma permissão que ele mesmo não tem.
 
@@ -110,7 +115,7 @@ O que a empresa vê do candidato:
 
 | Situação | O que a empresa vê |
 | --- | --- |
-| Candidatura enviada | O `candidate_snapshot`, o currículo escolhido, respostas de triagem e anexos enviados |
+| Candidatura enviada | O `candidate_snapshot`, o currículo escolhido, respostas de triagem e as cópias dos anexos enviados; contato só para quem tem `applications.view_contact` |
 | Banco de talentos (perfil `visible_to_companies`) | Título, resumo, competências, experiências e formação. **Sem** contato, sem documentos, até o candidato aceitar um convite ou se candidatar |
 | Nenhuma das duas | Nada |
 
@@ -125,10 +130,14 @@ O que a empresa vê do candidato:
 | Editar planos, preços e limites | | ✔ |
 | Ver assinaturas e pagamentos | ✔ (sem dados de cobrança) | ✔ |
 | Ativar e desativar fontes de vagas | | ✔ |
-| **Acessar documento ou dado privado de usuário** | | ✔ com justificativa obrigatória, acesso temporário de 30 minutos, auditado e visível ao titular no histórico de acessos |
+| **Acessar documento ou dado privado de usuário** | | ✔ com justificativa obrigatória (mínimo 20 caracteres), concessão em `admin_access_grants` de no máximo 30 minutos, auditada e visível ao titular no histórico de acessos |
+| Ler a trilha de auditoria | | ✔ |
+| Consultar `access_logs` (Marco Civil) | | ✔ só por função, com justificativa (ex.: ordem judicial) |
 | Impersonar usuário | Não existe no MVP |
 
 MFA obrigatório para qualquer `platform_role` diferente de `none`.
+
+O papel de plataforma é **lido da tabela `users` pelo banco** (`app_platform_role()`), nunca de uma variável enviada pela aplicação. Uma variável forjada não concede acesso de administrador (testado no protótipo, T15b).
 
 ## 7. Implementação
 
@@ -150,8 +159,14 @@ async def move_application(
 
 ## 8. Testes obrigatórios
 
+Situação: os testes marcados ✅ foram comprovados no protótipo de RLS (`docs/prototypes/`); todos precisam ser reimplementados no pytest da fase indicada.
+
+0. ✅ Isolamento na camada do banco para organização, membro removido, contexto forjado e papel de plataforma forjado (T05, T06, T07, T15b). Repetir no pytest na Fase 1.
 1. Matriz completa: para cada endpoint de organização e cada papel de sistema, o resultado esperado (permitido, 403, 404) é testado automaticamente a partir de uma tabela declarativa.
 2. Membro removido ou suspenso perde acesso na requisição seguinte.
 3. Recrutador com `assigned_jobs` não vê candidaturas de vagas não atribuídas.
 4. Usuário de outra organização recebe 404 em todos os recursos.
 5. Escalada: membro tentando alterar o próprio papel ou conceder permissão que não tem recebe 403.
+6. `admin` tentando rebaixar, remover ou transferir o `owner` recebe 403 na API **e** é recusado pelo gatilho do banco (Fase 2).
+7. `viewer` não recebe e-mail e telefone em nenhuma resposta da API e a função `application_contact` recusa (Fase 5).
+8. Auditoria: membro com `org.audit.view` lê só a própria organização; sem a permissão, nada (✅ T14 no protótipo; repetir na Fase 2).

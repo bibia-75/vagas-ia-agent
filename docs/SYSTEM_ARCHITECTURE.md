@@ -55,6 +55,8 @@ flowchart LR
 - Cookies de sessão `HttpOnly`, `Secure`, `SameSite=Lax`, sem necessidade de CORS aberto.
 - Proteção CSRF por token duplo (cookie `csrf_token` + cabeçalho `X-CSRF-Token`) em métodos que alteram dados.
 - O frontend nunca guarda tokens em `localStorage`.
+- O IP real do cliente chega à API por uma cadeia de confiança assinada pelo Next (cabeçalho `X-Vagas-Client-IP` + HMAC); a API nunca confia em `X-Forwarded-For` vindo do cliente. Detalhes em SECURITY_AND_LGPD.md, seção 4.1.
+- Webhooks externos (Mercado Pago) também entram pelo Next (`/api/webhooks/...`), para a API poder ficar sem acesso público.
 - Páginas públicas (landing, vagas públicas) podem ser renderizadas no servidor para SEO.
 
 ### 3.2 Contexto de trabalho
@@ -217,7 +219,9 @@ O resultado da IA nunca vira dado oficial sem confirmação. A tela de revisão 
 ## 8. Armazenamento de arquivos
 
 - Bucket privado, sem acesso público.
-- Prefixos: `quarantine/` (aguardando validação, expira em 24 h), `private/users/{user_id}/`, `private/orgs/{org_id}/`, `exports/{user_id}/` (expira em 7 dias).
+- Prefixos: `quarantine/` (aguardando validação, expira em 24 h), `private/users/{user_id}/`, `private/orgs/{org_id}/` (inclui as cópias dos anexos de candidaturas em `private/orgs/{org_id}/applications/{id}/`), `exports/{user_id}/` (expira em 7 dias).
+- Exclusão de arquivos sempre pela `storage_deletion_queue`, gravada na mesma transação do banco (DATABASE_DESIGN.md, seção 3.12).
+- Uploads por URL assinada de **10 minutos**, para um objeto específico em `quarantine/`, com tipo e tamanho fixados; CORS do bucket só para a origem do frontend do ambiente e CSP liberando só o endpoint exato do bucket (SECURITY_AND_LGPD.md, seção 4.2).
 - Downloads por URL assinada com validade de **5 minutos**, gerada só após checagem de permissão; cada geração para documento de terceiro (ex.: recrutador abrindo currículo) é registrada em auditoria.
 - Logos de empresas e fotos públicas (se existirem) ficam em bucket ou prefixo público separado, depois de validados.
 - Versionamento do bucket ligado em produção, com regra de expiração de versões antigas em 30 dias.
@@ -284,7 +288,7 @@ Fontes ficam cadastradas em `external_job_sources` com `enabled`, `terms_url`, `
 | Serviço | Tipo |
 | --- | --- |
 | `vagas-ia-web` | Web Service (Node, Next.js) |
-| `vagas-ia-api` | Web Service (Python, FastAPI) |
+| `vagas-ia-api` | Private Service (Python, FastAPI), recomendado; se o custo não for aprovado na D-24, Web Service com assinatura HMAC obrigatória do proxy |
 | `vagas-ia-worker` | Background Worker (Celery) |
 | `vagas-ia-cron-imports` | Cron Job (enfileira importação de vagas) |
 | `vagas-ia-cron-maintenance` | Cron Job (retenção, limpeza, conferência de assinaturas) |

@@ -383,7 +383,9 @@ Regras: vaga `published`; candidatura única por vaga (409 `already_applied`); c
 | POST | `/invitations/{token}/accept` | autenticado, com o mesmo e-mail do convite |
 | GET / POST / PATCH | `/orgs/{org_id}/roles[/{id}]` | `org.roles.manage` |
 | POST | `/orgs/{org_id}/leave` | membro (exceto último owner) |
-| DELETE | `/orgs/{org_id}` | `org.delete` |
+| DELETE | `/orgs/{org_id}` | `org.delete` (inicia o procedimento de 30 dias; DATABASE_DESIGN.md 5.2) |
+| POST | `/orgs/{org_id}/transfer-ownership` | só `owner` (exige senha) |
+| GET | `/orgs/{org_id}/audit-logs` | `org.audit.view` |
 
 `POST /orgs` com CNPJ: valida dígitos verificadores; se o CNPJ já pertencer a outra organização, retorna 409 e orienta pedir convite ao administrador dela.
 
@@ -444,7 +446,8 @@ Resposta inclui `next_questions`: perguntas adaptativas que faltam (ex.: se `wor
 | POST | `/orgs/{org_id}/applications/{id}/hire` | `applications.hire` |
 | GET / POST | `/orgs/{org_id}/applications/{id}/reviews` | `applications.review` |
 | POST | `/orgs/{org_id}/applications/{id}/ai-summary` | `applications.ai_summary` |
-| GET | `/orgs/{org_id}/applications/{id}/documents/{doc_id}/download` | `documents.download` (auditado) |
+| GET | `/orgs/{org_id}/applications/{id}/contact` | `applications.view_contact` (e-mail e telefone; auditado) |
+| GET | `/orgs/{org_id}/applications/{id}/attachments/{att_id}/download` | `documents.download` (cópia enviada na candidatura; auditado) |
 | GET / POST | `/orgs/{org_id}/applications/{id}/interviews` | `interviews.manage` |
 | PATCH | `/orgs/{org_id}/interviews/{id}` | `interviews.manage` |
 | GET | `/orgs/{org_id}/talent-search` | `candidates.search` |
@@ -484,7 +487,7 @@ Resposta inclui `next_questions`: perguntas adaptativas que faltam (ex.: se `wor
 | POST | `/orgs/{org_id}/subscription/checkout` | `org.billing.manage` |
 | POST | `/orgs/{org_id}/subscription/cancel` | `org.billing.manage` |
 | GET | `/orgs/{org_id}/usage` | `org.billing.view` |
-| POST | `/webhooks/mercadopago` | Público, validado por assinatura |
+| POST | `/webhooks/mercadopago` | Público (entra pelo proxy do Next em `/api/webhooks/mercadopago`), validado por assinatura |
 
 ### Webhook do Mercado Pago
 

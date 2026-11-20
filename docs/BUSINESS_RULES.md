@@ -13,7 +13,7 @@
 | RN-ACC-03 | Cadastro exige aceite das versões vigentes dos termos e da política de privacidade. Quando uma nova versão for publicada, o usuário precisa aceitar no próximo acesso para continuar. |
 | RN-ACC-04 | Sem e-mail verificado, o usuário pode montar perfil e cofre, mas não pode se candidatar, criar organização nem publicar vaga. |
 | RN-ACC-05 | Conta suspensa não faz login; candidaturas ficam visíveis às empresas como "candidato indisponível". |
-| RN-ACC-06 | Exclusão de conta tem carência de 7 dias ⚙, durante os quais o login cancela a exclusão. Depois, os dados são apagados conforme SECURITY_AND_LGPD.md, seção 6.4. |
+| RN-ACC-06 | Exclusão de conta tem carência de 7 dias ⚙, durante os quais o login cancela a exclusão. Depois, o procedimento transacional de DATABASE_DESIGN.md, seção 5.1, apaga os dados pessoais, anonimiza candidaturas e libera o e-mail para novo cadastro. |
 | RN-ACC-07 | Quem é o único `owner` de uma organização com outros membros precisa transferir a propriedade antes de excluir a conta. |
 
 ## 2. Perfil e documentos (PRF, DOC)
@@ -28,7 +28,7 @@
 | RN-DOC-03 | Dados extraídos por IA só viram registros oficiais após revisão e confirmação do usuário (individual ou "aceitar todos"). |
 | RN-DOC-04 | Certificado duplicado (mesmo curso, instituição e data) é sinalizado na revisão e não é criado de novo sem confirmação. |
 | RN-DOC-05 | Excluir um documento apaga o arquivo do storage. Registros criados a partir dele (certificado, formação) permanecem, sem o vínculo, a menos que o usuário escolha apagar também. |
-| RN-DOC-06 | Documentos do cofre nunca são compartilhados com empresas automaticamente. Só vão para a empresa os arquivos escolhidos na candidatura. |
+| RN-DOC-06 | Documentos do cofre nunca são compartilhados com empresas automaticamente. Só vão para a empresa os arquivos escolhidos na candidatura, como **cópias** imutáveis (`application_attachments`); apagar o original do cofre não afeta a candidatura. |
 
 ## 3. Currículos (RES)
 
@@ -49,7 +49,8 @@
 | RN-ORG-04 | Organização não verificada pode publicar até 1 vaga ativa ⚙, com selo "empresa não verificada". Organização verificada recebe selo de verificação. |
 | RN-ORG-05 | Convites expiram em 7 dias. O número de membros ativos respeita o limite do plano. |
 | RN-ORG-06 | Membro removido perde acesso imediatamente. Seu histórico de ações permanece, identificado pelo nome. |
-| RN-ORG-07 | Excluir a organização encerra todas as vagas, notifica candidatos com processos em andamento e apaga os dados da organização após 30 dias ⚙, respeitando as retenções legais. |
+| RN-ORG-08 | Um `admin` não pode rebaixar, suspender, remover nem transferir a propriedade do `owner`. Só um `owner` altera vínculos com papel `owner` (regra aplicada na API e por gatilho no banco). |
+| RN-ORG-07 | Excluir a organização encerra todas as vagas, notifica candidatos com processos em andamento e, após 30 dias ⚙, executa o procedimento transacional de DATABASE_DESIGN.md, seção 5.2 (histórico mínimo para o candidato, dados da empresa apagados, CNPJ liberado, retenções legais preservadas). |
 
 ## 5. Vagas (JOB)
 

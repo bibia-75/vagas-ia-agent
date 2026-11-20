@@ -125,6 +125,8 @@ Aprovadas em 20/11/2026 (resumo no topo). O texto de cada uma é mantido para re
 | B. Subdomínios (`app.` e `api.`) com cookies no domínio pai | Serviços independentes | Exige domínio próprio desde o início, CORS e configuração de cookies mais delicada |
 
 **Recomendação: A.**
+**Complemento da revisão técnica (20/11/2026):** com o proxy, a API recebe o IP do servidor do Next. A cadeia de confiança do IP (SECURITY_AND_LGPD.md, 4.1) passa a fazer parte desta decisão. Recomendado também que a API seja um serviço privado do Render; como pode ter custo, isso entra na estimativa da D-24.
+
 **Status:** Aprovada em 20/11/2026
 
 ### D-16: Região do Render

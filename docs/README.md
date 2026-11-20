@@ -16,6 +16,7 @@ Leia nesta ordem:
 | 10 | [BUSINESS_RULES.md](BUSINESS_RULES.md) | Regras numeradas (RN-XXX-NN), estados, planos e limites |
 | 11 | [UI_UX_GUIDELINES.md](UI_UX_GUIDELINES.md) | Identidade visual, navegação, telas, responsividade e acessibilidade |
 | 12 | [DEVELOPMENT_ROADMAP.md](DEVELOPMENT_ROADMAP.md) | Fases, plano detalhado da Fase 1 e modelo de relatório |
+| 13 | [prototypes/README.md](prototypes/README.md) | Protótipo de RLS testado no PostgreSQL 16 (referência, não é código de produção) |
 
 Regras para quem desenvolve (pessoas ou Claude Code): [CLAUDE.md](../CLAUDE.md).
 
