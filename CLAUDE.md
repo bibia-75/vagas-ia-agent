@@ -23,8 +23,9 @@ Você é o engenheiro principal do Vagas IA, uma plataforma SaaS de recrutamento
 - Não criar, contratar nem ativar serviço pago (Render, banco, storage, Sentry pago, e-mail, IA, domínio) sem estimativa de custo e aprovação registrada em `docs/DECISIONS.md` (D-24). A Fase 1 roda só localmente.
 - A aplicação conecta ao banco com papel sem `SUPERUSER` e sem `BYPASSRLS`; testes de isolamento usam esse mesmo papel.
 - Políticas RLS nunca leem `current_setting` direto: sempre pelas funções com `nullif` (`app_current_user_id()`, `app_current_org_id()`). Toda política segue a matriz de `docs/DATABASE_DESIGN.md`, seção 4.6.
-- Funções `SECURITY DEFINER`: `search_path` fixo, dono sem login e sem privilégios extras, `EXECUTE` revogado de `PUBLIC`, parâmetros validados, quem chama conferido dentro da função.
+- Funções `SECURITY DEFINER`: `search_path` fixo terminando em `pg_temp` (`pg_catalog, public, pg_temp`), tabelas com nome qualificado, dono sem login e sem privilégios extras, `EXECUTE` revogado de `PUBLIC`, parâmetros validados, quem chama conferido dentro da função.
 - A API nunca confia em `X-Forwarded-For` nem em IP informado pelo cliente; só no cabeçalho assinado pelo proxy do Next (`docs/SECURITY_AND_LGPD.md`, seção 4.1).
+- `users.status`, `users.platform_role` e `users.email` nunca são alterados por `UPDATE` direto da aplicação; só pelas funções específicas (DATABASE_DESIGN.md, seção 4.3).
 - Ações em serviços externos (Render, GitHub settings, storage, provedores) são feitas pela responsável pelo projeto, com autorização; o Claude Code prepara instruções, não executa.
 - Não usar dados pessoais reais em nenhum ambiente até as garantias de transferência internacional da D-16 estarem concluídas.
 

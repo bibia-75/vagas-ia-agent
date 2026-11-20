@@ -912,7 +912,7 @@ Toda exclusão de arquivo é **enfileirada na mesma transação** que apaga ou a
 
 ## 4. Isolamento e Row Level Security
 
-> O núcleo deste desenho foi **testado num PostgreSQL 16 real** com o protótipo em [`docs/prototypes/`](prototypes/README.md) (22 testes executados conectado como `vagas_app`, mais testes de mutação). O que ainda não foi testado está marcado como "testar na Fase 1".
+> O núcleo deste desenho foi **testado num PostgreSQL 16 real** com o protótipo em [`docs/prototypes/`](prototypes/README.md) (24 grupos de testes, T01 a T24, executados com o papel correto de cada cenário, e 9 testes de mutação; última execução em 20/11/2026). O que ainda não foi testado está marcado como "testar na Fase 1".
 
 ### 4.1 Estratégia
 
@@ -927,10 +927,11 @@ Banco compartilhado, esquema único, coluna de dono em cada tabela (`user_id` ou
 | Papel | Login | Uso | Regras |
 | --- | --- | --- | --- |
 | `vagas_owner` | sim | Só migrações (Alembic) | Dono das tabelas. Também fica sob RLS forçada |
-| `vagas_app` | sim | API | **Sem `SUPERUSER` e sem `BYPASSRLS`**. Privilégios por tabela conforme a matriz. A API verifica isso ao iniciar e se recusa a subir se o papel for privilegiado (testado: T01) |
+| `vagas_app` | sim | API | **Sem `SUPERUSER` e sem `BYPASSRLS`**. Privilégios por tabela conforme a matriz. Em `users`: só `SELECT` e `UPDATE` **das colunas** `full_name` e `password_hash`; sem `INSERT`, sem `DELETE` e sem `UPDATE` de `status`, `platform_role` e `email` (testado: T13, T23a). A API verifica o próprio papel ao iniciar e se recusa a subir se ele for privilegiado (papel testado: T01; recusa de inicialização a testar na Fase 1) |
 | `vagas_worker` | sim | Workers Celery e cron | Sem `SUPERUSER` e sem `BYPASSRLS`. Credencial diferente da API. As políticas de "sistema" são dirigidas a este papel (`TO vagas_worker`), e não a uma variável que a API poderia definir |
 | `vagas_ctx_definer` | não | Dono das funções de contexto e das ações restritas do candidato | Privilégios mínimos: só `SELECT` (e `UPDATE` onde a função precisa) nas tabelas que suas funções consultam |
 | `vagas_auth_definer` | não | Dono das funções de autenticação | Só `SELECT`/`INSERT` em `users`, `user_sessions`, `auth_tokens`, `login_attempts` |
+| `vagas_account_definer` | não | Dono das funções que mudam o status da conta | Só `SELECT` em `users`, `organization_members`, `user_sessions`; `UPDATE` **apenas da coluna** `users.status` e `user_sessions.revoked_at`; `INSERT` em `audit_logs` (testado: T19, T23) |
 | `vagas_readonly` | sim | Suporte técnico e relatórios internos | `SELECT` sob RLS; sem acesso a colunas de contato nem a `access_logs` |
 
 Os papéis sem login acessam suas tabelas por **políticas dirigidas a eles** (`CREATE POLICY ... TO vagas_ctx_definer USING (true)`), o que dispensa `BYPASSRLS` e superusuário. Sem isso, uma função como `app_is_active_member()` leria `organization_members` sob a própria política que a chama e entraria em recursão infinita (problema encontrado e corrigido no protótipo).
@@ -952,11 +953,11 @@ O terceiro parâmetro `true` limita o valor à transação.
 
 ```sql
 CREATE FUNCTION app_current_user_id() RETURNS uuid
-LANGUAGE sql STABLE SET search_path = pg_catalog
+LANGUAGE sql STABLE SET search_path = pg_catalog, pg_temp
 AS $$ SELECT nullif(current_setting('app.user_id', true), '')::uuid $$;
 
 CREATE FUNCTION app_current_org_id() RETURNS uuid
-LANGUAGE sql STABLE SET search_path = pg_catalog
+LANGUAGE sql STABLE SET search_path = pg_catalog, pg_temp
 AS $$ SELECT nullif(current_setting('app.org_id', true), '')::uuid $$;
 ```
 
@@ -973,6 +974,9 @@ AS $$ SELECT nullif(current_setting('app.org_id', true), '')::uuid $$;
 | `talent_search(org, filtros)` | definer | `vagas_ctx_definer` | Perfis com `talent_pool_visibility = visible_to_companies`, **só colunas profissionais, sem contato**, exige `candidates.search` (testar na Fase 5) |
 | `application_contact(app_id)` | definer | `vagas_ctx_definer` | Contato do candidato, exige `applications.view_contact` (testar na Fase 5) |
 | `candidate_withdraw_application(app_id)` | definer | `vagas_ctx_definer` | Única alteração que o candidato faz na candidatura (testado: T16) |
+| `account_request_deletion()` | definer | `vagas_account_definer` | Titular do contexto pede exclusão: status `pending_deletion`, revoga todas as sessões, grava auditoria visível ao titular; devolve `requested`, `blocked_sole_owner` (RN-ACC-07) ou `not_allowed`; sem usuário no contexto, erro (testado: T23b, T23c; mutação M3) |
+| `account_cancel_deletion()` | definer | `vagas_account_definer` | Titular volta de `pending_deletion` para `active` na carência (chamada pela API após login com senha correta) e grava auditoria (testado: T23b, T23c) |
+| `admin_set_user_status(alvo, status, motivo)` | definer | `vagas_account_definer` | Só administrador da plataforma (papel lido do banco); status só `active` ou `suspended`, com a transição válida; motivo de 10 a 500 caracteres; não altera a si mesmo nem outra conta de plataforma; ao suspender, revoga sessões; grava auditoria com a justificativa (testado: T23d, T23e, T23f; mutação M2) |
 | `candidate_respond_interview(id, resposta)` | definer | `vagas_ctx_definer` | Confirmar ou pedir remarcação (testar na Fase 5) |
 | `conversation_mark_read(id)` | definer | `vagas_ctx_definer` | Marca leitura do lado de quem chama (testar na Fase 5) |
 | `org_create(...)` | definer | `vagas_ctx_definer` | Cria organização e o primeiro `owner` na mesma transação (testar na Fase 2) |
@@ -988,15 +992,16 @@ Login, sessão e recuperação de senha acontecem **antes** de existir usuário 
 | --- | --- | --- |
 | `auth_lookup_login(email)` | Devolve id, hash e status para conferir a senha na aplicação | E-mail com formato válido e até 254 caracteres; entrada inválida devolve vazio, sem erro revelador (testado: T11) |
 | `auth_resolve_session(token_hash)` | Devolve sessão e usuário se a sessão estiver válida, não revogada e o usuário ativo | Hash com exatamente 32 bytes (testado: T12) |
-| `auth_register_user(id, email, hash, nome)` | Cria usuário | Hash precisa ser Argon2id; e-mail e nome válidos; e-mail duplicado não gera erro (evita descobrir contas) (testado: T13) |
+| `auth_register_user(id, email, hash, nome)` | Cria usuário. **Devolve o id criado, ou NULL se o e-mail já existir** (nada é criado). A API responde igual nos dois casos e, no NULL, só envia o aviso de tentativa ao dono do e-mail, sem gravar consentimentos nem tokens | Nenhum parâmetro nulo; hash Argon2id; e-mail e nome válidos (testado: T13; mutação M1 com a versão antiga, que devolvia um id inexistente) |
 | `auth_issue_token(user, purpose)` e `auth_consume_token(hash, purpose)` | Tokens de verificação e redefinição, uso único | Finalidade em lista fechada; expiração (testar na Fase 2) |
 | `auth_record_login_attempt(...)` e `auth_recent_failures(email, ip)` | Limites de tentativa | (testar na Fase 2) |
 
 ### 4.5 Regras para toda função `SECURITY DEFINER`
 
-1. `SET search_path = pg_catalog, public` (ou mais restrito) na própria definição, e nomes de tabela qualificados com o esquema (testado: T19).
+1. `SET search_path = pg_catalog, public, pg_temp` na própria definição, **com `pg_temp` explicitamente por último** (se não for listado, o PostgreSQL procura tabelas temporárias **primeiro**), e nomes de tabela qualificados com o esquema. As duas proteções são independentes (testado: T19 confere a configuração; T24 simula o ataque com tabela temporária; mutação M5 mostra o ataque funcionando sem `pg_temp` por último; M6 mostra `pg_temp` por último bloqueando o ataque mesmo com nome de tabela sem esquema). Funções comuns usadas pelas políticas também fixam `search_path = pg_catalog, pg_temp`.
 2. Dono é um papel **sem login, sem superusuário e sem `BYPASSRLS`**, com privilégio só nas tabelas que a função usa (testado: T19).
-3. `REVOKE EXECUTE ... FROM PUBLIC`; `GRANT EXECUTE` só para o papel que precisa.
+3. `REVOKE EXECUTE ... FROM PUBLIC`; `GRANT EXECUTE` só para o papel que precisa (testado: T19).
+7. Recomendação a decidir na Fase 1: revogar `TEMPORARY` no banco de `PUBLIC` e dos papéis da aplicação, se o SQLAlchemy e as migrações não precisarem de tabelas temporárias. É uma terceira camada; as duas acima já foram testadas.
 4. Todo parâmetro validado (formato, tamanho, lista fechada) antes de qualquer consulta; entrada inválida devolve vazio ou erro genérico, sem detalhe interno.
 5. A função confere por conta própria quem chama (`app_current_user_id()`, permissão, contexto); nunca confia num parâmetro que diga quem é o usuário.
 6. Faz uma coisa só. Ações do candidato que mudam um único campo (retirar candidatura, responder entrevista) são funções, e o candidato **não tem política de `UPDATE`** na tabela (testado: T16), porque a RLS controla linhas, não colunas.
@@ -1018,8 +1023,8 @@ Situação do teste: ✅ testado no protótipo · 🔜 testar na fase indicada.
 
 | Tabela | SELECT | INSERT | UPDATE | DELETE | Teste |
 | --- | --- | --- | --- | --- | --- |
-| users | P; A (dados de cadastro); F(auth_lookup_login, org_member_directory) | F(auth_register_user) | P (campos permitidos pela API); W (anonimização) | ninguém (vira registro anonimizado) | ✅ T11, T13 · 🔜 2 |
-| user_sessions | P; F(auth_resolve_session) | P (após login) | P (atividade, revogação) | P; W (expiradas) | ✅ T12 · 🔜 2 |
+| users | P; A (dados de cadastro); F(auth_lookup_login, org_member_directory) | F(auth_register_user) (`vagas_app` sem `INSERT`) | P só `full_name` e `password_hash` (privilégio de coluna); `status` só por F(account_request_deletion, account_cancel_deletion, admin_set_user_status); `email` por F(email_change_confirm), Fase 2; `platform_role` só por migração ou suporte de banco; W (anonimização) | ninguém (vira registro anonimizado) | ✅ T11, T13, T23 · 🔜 2 |
+| user_sessions | P; F(auth_resolve_session) | P (após login) | P (atividade, revogação); F(account_request_deletion, admin_set_user_status) (revogação) | P; W (expiradas) | ✅ T12, T23b, T23d · 🔜 2 |
 | auth_tokens | F(auth_consume_token) | F(auth_issue_token) | F(auth_consume_token) | W (expirados) | 🔜 2 |
 | login_attempts | F(auth_recent_failures) | F(auth_record_login_attempt) | ninguém | W (90 dias) | 🔜 2 |
 | user_profiles, user_preferences | P; Ag; F(talent_search) | P | P | W (exclusão de conta) | 🔜 3 |
@@ -1071,14 +1076,14 @@ Situação do teste: ✅ testado no protótipo · 🔜 testar na fase indicada.
 Regras que ficam na API (não na RLS) e precisam de testes próprios:
 - Escopo de vagas atribuídas (`job_scope = assigned_jobs`) para recrutadores.
 - Distinção entre `applications.move`, `applications.reject` e `applications.hire` dentro do mesmo `UPDATE`.
-- Campos permitidos em cada `UPDATE` do titular (ex.: o usuário não altera o próprio `platform_role`; reforçado por privilégio de coluna em `users.platform_role` e `users.status`).
+- Campos permitidos em cada `UPDATE` do titular nas demais tabelas (a RLS controla linhas, não colunas). Em `users` isso já é garantido no banco por privilégio de coluna (testado: T23a).
 - Janela de resposta em mensagens (RN-MSG-02).
 
 ### 4.7 Testes de isolamento obrigatórios
 
 1. Todos os testes conectam com `vagas_app` (ou `vagas_worker`, para tarefas de sistema), **nunca** com `vagas_owner` ou superusuário. Um teste falha se a conexão de teste tiver `SUPERUSER` ou `BYPASSRLS`.
 2. Para cada linha da matriz, um teste por célula: o ator permitido consegue; os demais não (leitura devolve zero linhas; escrita é recusada ou afeta zero linhas).
-3. Fluxos de acesso cruzado obrigatórios (os 13 primeiros já comprovados no protótipo, a repetir no pytest):
+3. Fluxos de acesso cruzado obrigatórios (os 15 primeiros já comprovados no protótipo, a repetir no pytest):
    - contexto vazio após transação anterior (T02)
    - usuário contra usuário (T03, T04)
    - organização contra organização e contexto forjado (T05, T06)
@@ -1092,13 +1097,15 @@ Regras que ficam na API (não na RLS) e precisam de testes próprios:
    - candidato só retira, não altera status (T16)
    - diretório da equipe (T17)
    - `access_logs` só gravação (T18, T22)
+   - status da conta só por funções, com autorização e auditoria; colunas protegidas em `users` (T23)
+   - ataque de sombra com tabela temporária (T24)
    - banco de talentos sem contato e só perfis visíveis (Fase 5)
    - contato do candidato negado ao `viewer` (Fase 5)
    - mensagens: candidato só na própria conversa, empresa só nas suas (Fase 5)
    - histórico: candidato só vê eventos visíveis (Fase 5)
    - proteção do `owner` contra `admin` (Fase 2)
    - procedimentos de exclusão de conta e de organização (Fases 2 e 7)
-4. Testes de mutação periódicos: remover uma condição de política deve fazer pelo menos um teste falhar.
+4. Testes de mutação periódicos: remover uma condição de política ou de função deve fazer pelo menos um teste falhar. O protótipo tem 9 mutações automatizadas (`docs/prototypes/run_mutations.sh`), que a Fase 1 deve portar.
 
 ### 4.8 Tabelas sem RLS
 
@@ -1110,7 +1117,7 @@ Os dois procedimentos rodam no worker, **numa única transação** cada, chamand
 
 ### 5.1 Exclusão de conta (RN-ACC-06)
 
-**Pedido:** status `pending_deletion`, todas as sessões revogadas, e-mail de confirmação com link para cancelar. Bloqueado se a pessoa for o único `owner` de uma organização com outros membros (RN-ACC-07).
+**Pedido:** pela função `account_request_deletion()`: status `pending_deletion`, todas as sessões revogadas, auditoria; depois a API envia o e-mail de confirmação com link para cancelar. Bloqueado se a pessoa for o único `owner` de uma organização com outros membros (RN-ACC-07). **Cancelamento:** login com senha correta durante a carência chama `account_cancel_deletion()` (testado: T23b, T23c).
 
 **Após 7 dias, em uma transação:**
 

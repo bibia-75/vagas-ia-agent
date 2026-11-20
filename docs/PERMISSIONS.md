@@ -125,7 +125,7 @@ O que a empresa vê do candidato:
 | --- | :-: | :-: |
 | Ver lista de usuários e empresas (dados de cadastro) | ✔ | ✔ |
 | Ver indicadores, filas, erros, importações, consumo de IA | ✔ | ✔ |
-| Suspender usuário ou empresa | | ✔ |
+| Suspender usuário ou empresa (usuário pela função `admin_set_user_status`, com justificativa auditada; nunca outra conta de plataforma nem a própria) | | ✔ |
 | Aprovar ou rejeitar verificação de empresa | | ✔ |
 | Editar planos, preços e limites | | ✔ |
 | Ver assinaturas e pagamentos | ✔ (sem dados de cobrança) | ✔ |

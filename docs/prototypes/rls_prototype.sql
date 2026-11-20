@@ -18,6 +18,7 @@ CREATE ROLE vagas_app    LOGIN NOSUPERUSER NOBYPASSRLS;      -- API
 CREATE ROLE vagas_worker LOGIN NOSUPERUSER NOBYPASSRLS;      -- tarefas de sistema
 CREATE ROLE vagas_auth_definer NOLOGIN NOSUPERUSER NOBYPASSRLS; -- dono das funções de autenticação
 CREATE ROLE vagas_ctx_definer  NOLOGIN NOSUPERUSER NOBYPASSRLS; -- dono das funções de contexto
+CREATE ROLE vagas_account_definer NOLOGIN NOSUPERUSER NOBYPASSRLS; -- dono das funções de status da conta
 
 GRANT CREATE ON SCHEMA public TO vagas_owner;
 SET ROLE vagas_owner;
@@ -105,7 +106,8 @@ CREATE TABLE audit_logs (
   organization_id uuid,
   subject_user_id uuid,
   visible_to_subject boolean NOT NULL DEFAULT false,
-  action text NOT NULL
+  action text NOT NULL,
+  justification text
 );
 CREATE TABLE access_logs (
   id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -119,11 +121,11 @@ CREATE TABLE access_logs (
 -- 3. Funções de contexto (sempre nullif: valor vazio vira NULL)
 -- ---------------------------------------------------------------
 CREATE FUNCTION app_current_user_id() RETURNS uuid
-LANGUAGE sql STABLE SET search_path = pg_catalog
+LANGUAGE sql STABLE SET search_path = pg_catalog, pg_temp
 AS $$ SELECT nullif(current_setting('app.user_id', true), '')::uuid $$;
 
 CREATE FUNCTION app_current_org_id() RETURNS uuid
-LANGUAGE sql STABLE SET search_path = pg_catalog
+LANGUAGE sql STABLE SET search_path = pg_catalog, pg_temp
 AS $$ SELECT nullif(current_setting('app.org_id', true), '')::uuid $$;
 
 RESET ROLE;
@@ -136,12 +138,12 @@ SET ROLE vagas_owner;
 
 -- Papel de plataforma lido do BANCO (nunca de variável enviada pela aplicação).
 CREATE FUNCTION app_platform_role() RETURNS text
-LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, public
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp
 AS $$ SELECT coalesce((SELECT u.platform_role FROM public.users u
                        WHERE u.id = public.app_current_user_id() AND u.status = 'active'), 'none') $$;
 
 CREATE FUNCTION app_is_active_member(p_org uuid) RETURNS boolean
-LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, public
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp
 AS $$ SELECT p_org IS NOT NULL AND EXISTS (
         SELECT 1 FROM public.organization_members m
         WHERE m.organization_id = p_org
@@ -150,7 +152,7 @@ AS $$ SELECT p_org IS NOT NULL AND EXISTS (
 
 -- Membro ativo, organização do contexto atual e permissão do papel.
 CREATE FUNCTION app_has_org_permission(p_org uuid, p_perm text) RETURNS boolean
-LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, public
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp
 AS $$ SELECT p_org IS NOT NULL
         AND p_org = public.app_current_org_id()
         AND p_perm ~ '^[a-z_]+(\.[a-z_]+)+$'
@@ -163,7 +165,7 @@ AS $$ SELECT p_org IS NOT NULL
             AND rp.permission_key = p_perm) $$;
 
 CREATE FUNCTION app_admin_can_access_user(p_target uuid) RETURNS boolean
-LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, public
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp
 AS $$ SELECT public.app_platform_role() = 'admin' AND EXISTS (
         SELECT 1 FROM public.admin_access_grants g
         WHERE g.admin_user_id = public.app_current_user_id()
@@ -173,7 +175,7 @@ AS $$ SELECT public.app_platform_role() = 'admin' AND EXISTS (
 -- Diretório da equipe: só nome e e-mail dos colegas, só para membro ativo.
 CREATE FUNCTION org_member_directory(p_org uuid)
 RETURNS TABLE (user_id uuid, full_name text, role_key text)
-LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, public
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp
 AS $$ SELECT u.id, u.full_name, m.role_key
       FROM public.organization_members m JOIN public.users u ON u.id = m.user_id
       WHERE m.organization_id = p_org AND m.status = 'active'
@@ -193,7 +195,7 @@ GRANT EXECUTE ON FUNCTION app_current_user_id(), app_current_org_id() TO vagas_c
 SET ROLE vagas_owner;
 CREATE FUNCTION auth_lookup_login(p_email text)
 RETURNS TABLE (user_id uuid, password_hash text, status text)
-LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = pg_catalog, public
+LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp
 AS $$
 BEGIN
   IF p_email IS NULL OR length(p_email) > 254 OR p_email !~ '^[^@\s]+@[^@\s]+$' THEN
@@ -205,7 +207,7 @@ END $$;
 
 CREATE FUNCTION auth_resolve_session(p_token_hash bytea)
 RETURNS TABLE (session_id uuid, user_id uuid)
-LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = pg_catalog, public
+LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp
 AS $$
 BEGIN
   IF p_token_hash IS NULL OR length(p_token_hash) <> 32 THEN
@@ -221,17 +223,24 @@ END $$;
 
 CREATE FUNCTION auth_register_user(p_id uuid, p_email text, p_password_hash text, p_full_name text)
 RETURNS uuid
-LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, public
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp
 AS $$
+-- Devolve o id criado, ou NULL quando o e-mail já existe (nada é criado).
+-- A API responde igual nos dois casos (não revela quem tem conta) e, no NULL,
+-- envia ao dono do e-mail o aviso de tentativa de cadastro, sem gravar mais nada.
+DECLARE v_id uuid;
 BEGIN
-  IF p_email !~ '^[^@\s]+@[^@\s]+$' OR length(p_email) > 254
-     OR p_password_hash !~ '^\$argon2id\$' OR length(trim(p_full_name)) < 2 THEN
+  IF p_id IS NULL OR p_email IS NULL OR p_password_hash IS NULL OR p_full_name IS NULL
+     OR p_email !~ '^[^@\s]+@[^@\s]+$' OR length(p_email) > 254
+     OR p_password_hash !~ '^\$argon2id\$'
+     OR length(trim(p_full_name)) < 2 OR length(p_full_name) > 160 THEN
     RAISE EXCEPTION 'invalid_input' USING ERRCODE = '22023';
   END IF;
   INSERT INTO public.users (id, email, password_hash, full_name)
   VALUES (p_id, lower(p_email), p_password_hash, trim(p_full_name))
-  ON CONFLICT (email) DO NOTHING;
-  RETURN p_id;
+  ON CONFLICT (email) DO NOTHING
+  RETURNING id INTO v_id;
+  RETURN v_id;
 END $$;
 RESET ROLE;
 ALTER FUNCTION auth_lookup_login(text) OWNER TO vagas_auth_definer;
@@ -244,7 +253,7 @@ ALTER FUNCTION auth_register_user(uuid, text, text, text) OWNER TO vagas_auth_de
 GRANT SELECT, UPDATE ON applications TO vagas_ctx_definer;
 SET ROLE vagas_owner;
 CREATE FUNCTION candidate_withdraw_application(p_application uuid) RETURNS boolean
-LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, public
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp
 AS $$
 DECLARE v_count int;
 BEGIN
@@ -258,20 +267,123 @@ END $$;
 RESET ROLE;
 ALTER FUNCTION candidate_withdraw_application(uuid) OWNER TO vagas_ctx_definer;
 
+-- ---------------------------------------------------------------
+-- 5b. Status da conta (B2): a aplicação NÃO altera users.status direto
+-- ---------------------------------------------------------------
+GRANT USAGE ON SCHEMA public TO vagas_account_definer;
+GRANT SELECT ON users, organization_members, user_sessions TO vagas_account_definer;
+GRANT UPDATE (status) ON users TO vagas_account_definer;
+GRANT UPDATE (revoked_at) ON user_sessions TO vagas_account_definer;
+GRANT INSERT ON audit_logs TO vagas_account_definer;
+SET ROLE vagas_owner;
+
+-- Pedido de exclusão pelo próprio titular (RN-ACC-06, RN-ACC-07).
+CREATE FUNCTION account_request_deletion() RETURNS text
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp
+AS $$
+DECLARE v_user uuid := public.app_current_user_id(); v_n int;
+BEGIN
+  IF v_user IS NULL THEN
+    RAISE EXCEPTION 'not_authenticated' USING ERRCODE = '42501';
+  END IF;
+  -- Único owner ativo de organização que tem outros membros ativos: bloqueado.
+  IF EXISTS (
+    SELECT 1 FROM public.organization_members m
+    WHERE m.user_id = v_user AND m.role_key = 'owner' AND m.status = 'active'
+      AND NOT EXISTS (SELECT 1 FROM public.organization_members o
+                      WHERE o.organization_id = m.organization_id AND o.role_key = 'owner'
+                        AND o.status = 'active' AND o.user_id <> v_user)
+      AND EXISTS (SELECT 1 FROM public.organization_members o
+                  WHERE o.organization_id = m.organization_id
+                    AND o.status = 'active' AND o.user_id <> v_user)) THEN
+    RETURN 'blocked_sole_owner';
+  END IF;
+  UPDATE public.users SET status = 'pending_deletion' WHERE id = v_user AND status = 'active';
+  GET DIAGNOSTICS v_n = ROW_COUNT;
+  IF v_n <> 1 THEN
+    RETURN 'not_allowed';
+  END IF;
+  UPDATE public.user_sessions SET revoked_at = now() WHERE user_id = v_user AND revoked_at IS NULL;
+  INSERT INTO public.audit_logs (actor_user_id, subject_user_id, visible_to_subject, action)
+  VALUES (v_user, v_user, true, 'account.deletion_requested');
+  RETURN 'requested';
+END $$;
+
+-- Cancelamento pelo titular durante a carência (o login com senha correta chama esta função).
+CREATE FUNCTION account_cancel_deletion() RETURNS boolean
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp
+AS $$
+DECLARE v_user uuid := public.app_current_user_id(); v_n int;
+BEGIN
+  IF v_user IS NULL THEN
+    RAISE EXCEPTION 'not_authenticated' USING ERRCODE = '42501';
+  END IF;
+  UPDATE public.users SET status = 'active' WHERE id = v_user AND status = 'pending_deletion';
+  GET DIAGNOSTICS v_n = ROW_COUNT;
+  IF v_n <> 1 THEN
+    RETURN false;
+  END IF;
+  INSERT INTO public.audit_logs (actor_user_id, subject_user_id, visible_to_subject, action)
+  VALUES (v_user, v_user, true, 'account.deletion_canceled');
+  RETURN true;
+END $$;
+
+-- Suspensão e reativação pelo administrador da plataforma (RN-ADM-02).
+CREATE FUNCTION admin_set_user_status(p_target uuid, p_status text, p_reason text) RETURNS boolean
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp
+AS $$
+DECLARE v_admin uuid := public.app_current_user_id(); v_n int;
+BEGIN
+  IF v_admin IS NULL OR public.app_platform_role() <> 'admin' THEN
+    RAISE EXCEPTION 'permission_denied' USING ERRCODE = '42501';
+  END IF;
+  IF p_target IS NULL OR p_target = v_admin
+     OR p_status IS NULL OR p_status NOT IN ('active', 'suspended')
+     OR p_reason IS NULL OR length(trim(p_reason)) < 10 OR length(p_reason) > 500 THEN
+    RAISE EXCEPTION 'invalid_input' USING ERRCODE = '22023';
+  END IF;
+  -- Só contas comuns, e só a transição válida (active -> suspended ou suspended -> active).
+  UPDATE public.users SET status = p_status
+  WHERE id = p_target AND platform_role = 'none'
+    AND status = CASE p_status WHEN 'suspended' THEN 'active' ELSE 'suspended' END;
+  GET DIAGNOSTICS v_n = ROW_COUNT;
+  IF v_n <> 1 THEN
+    RETURN false;
+  END IF;
+  IF p_status = 'suspended' THEN
+    UPDATE public.user_sessions SET revoked_at = now() WHERE user_id = p_target AND revoked_at IS NULL;
+  END IF;
+  INSERT INTO public.audit_logs (actor_user_id, subject_user_id, visible_to_subject, action, justification)
+  VALUES (v_admin, p_target, false,
+          CASE p_status WHEN 'suspended' THEN 'admin.user_suspended' ELSE 'admin.user_reactivated' END,
+          trim(p_reason));
+  RETURN true;
+END $$;
+RESET ROLE;
+ALTER FUNCTION account_request_deletion() OWNER TO vagas_account_definer;
+ALTER FUNCTION account_cancel_deletion() OWNER TO vagas_account_definer;
+ALTER FUNCTION admin_set_user_status(uuid, text, text) OWNER TO vagas_account_definer;
+
 -- Ninguém além dos papéis certos executa funções privilegiadas.
 REVOKE EXECUTE ON ALL FUNCTIONS IN SCHEMA public FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION app_current_user_id(), app_current_org_id(), app_platform_role(),
   app_is_active_member(uuid), app_has_org_permission(uuid, text), app_admin_can_access_user(uuid),
   org_member_directory(uuid), auth_lookup_login(text), auth_resolve_session(bytea),
-  auth_register_user(uuid, text, text, text), candidate_withdraw_application(uuid)
+  auth_register_user(uuid, text, text, text), candidate_withdraw_application(uuid),
+  account_request_deletion(), account_cancel_deletion(), admin_set_user_status(uuid, text, text)
   TO vagas_app;
+GRANT EXECUTE ON FUNCTION app_current_user_id(), app_platform_role() TO vagas_account_definer;
 GRANT EXECUTE ON FUNCTION app_current_user_id(), app_current_org_id() TO vagas_worker;
 
 -- ---------------------------------------------------------------
 -- 6. Privilégios de tabela
 -- ---------------------------------------------------------------
 GRANT USAGE ON SCHEMA public TO vagas_app, vagas_worker;
-GRANT SELECT, INSERT, UPDATE, DELETE ON users, user_sessions, organizations, organization_members,
+-- users: a aplicação lê a própria linha e altera só nome e hash da senha.
+-- status, platform_role e email NÃO são alteráveis direto (funções específicas).
+GRANT SELECT ON users TO vagas_app;
+GRANT UPDATE (full_name, password_hash) ON users TO vagas_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON user_sessions, organizations, organization_members,
   documents, job_postings, applications, application_attachments, interview_schedules,
   admin_access_grants TO vagas_app;
 GRANT SELECT ON role_permissions TO vagas_app;
@@ -284,7 +396,7 @@ GRANT SELECT, UPDATE ON job_postings TO vagas_worker;     -- expiração de vaga
 -- Bloqueio adicional: nem o dono das tabelas altera auditoria.
 SET ROLE vagas_owner;
 CREATE FUNCTION audit_logs_block_change() RETURNS trigger
-LANGUAGE plpgsql SET search_path = pg_catalog
+LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp
 AS $$ BEGIN RAISE EXCEPTION 'audit_logs is append-only'; END $$;
 CREATE TRIGGER audit_logs_append_only BEFORE UPDATE OR DELETE ON audit_logs
 FOR EACH ROW EXECUTE FUNCTION audit_logs_block_change();
@@ -315,6 +427,12 @@ CREATE POLICY definer_ctx_grants ON admin_access_grants FOR SELECT TO vagas_ctx_
 CREATE POLICY definer_ctx_apps ON applications FOR ALL TO vagas_ctx_definer USING (true) WITH CHECK (true);
 CREATE POLICY definer_auth_users ON users FOR ALL TO vagas_auth_definer USING (true) WITH CHECK (true);
 CREATE POLICY definer_auth_sessions ON user_sessions FOR SELECT TO vagas_auth_definer USING (true);
+CREATE POLICY definer_account_users_sel ON users FOR SELECT TO vagas_account_definer USING (true);
+CREATE POLICY definer_account_users_upd ON users FOR UPDATE TO vagas_account_definer USING (true) WITH CHECK (true);
+CREATE POLICY definer_account_members ON organization_members FOR SELECT TO vagas_account_definer USING (true);
+CREATE POLICY definer_account_sessions_sel ON user_sessions FOR SELECT TO vagas_account_definer USING (true);
+CREATE POLICY definer_account_sessions_upd ON user_sessions FOR UPDATE TO vagas_account_definer USING (true) WITH CHECK (true);
+CREATE POLICY definer_account_audit ON audit_logs FOR INSERT TO vagas_account_definer WITH CHECK (true);
 
 -- users: só a própria linha. Cadastro e login por funções de autenticação.
 CREATE POLICY users_self_select ON users FOR SELECT USING (id = app_current_user_id());

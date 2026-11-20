@@ -119,13 +119,13 @@ Validações:
 - `password`: 10 a 128 caracteres; recusada se estiver na lista de senhas comuns ou contiver o e-mail.
 - Versões aceitas devem ser as vigentes em `legal_documents`.
 
-Saída `201`:
+Saída `202` (sempre a mesma, exista ou não o e-mail):
 
 ```json
-{ "user_id": "…", "email_verification_required": true }
+{ "email_verification_required": true }
 ```
 
-Se o e-mail já existir, a resposta é **a mesma** e o sistema envia ao dono do e-mail um aviso de tentativa de cadastro (evita descobrir quem tem conta).
+A resposta **não** inclui `user_id`: com e-mail já cadastrado não existe um id novo para devolver, e incluir um id só no caso de sucesso revelaria quem tem conta. Internamente, `auth_register_user` devolve o id criado ou NULL (DATABASE_DESIGN.md, seção 4.4). No NULL, a API não grava consentimentos nem tokens e só envia ao dono do e-mail um aviso de tentativa de cadastro. Tempo de resposta semelhante nos dois casos (o hash Argon2id é calculado sempre, antes da chamada).
 
 ### Contrato: `POST /auth/login`
 
@@ -161,7 +161,7 @@ Saída `200`: define os cookies `vagas_session` e `vagas_csrf` e retorna o mesmo
 | POST | `/me/data-requests` | Pede exportação ou exclusão (`type`) |
 | GET | `/me/data-requests` | Acompanha pedidos |
 | GET | `/me/access-history` | Quem acessou seus documentos (empresas e administração) |
-| DELETE | `/me/account` | Exclusão da conta (exige senha; carência de 7 dias, ver RN-ACC-06) |
+| DELETE | `/me/account` | Exclusão da conta (exige senha; carência de 7 dias, ver RN-ACC-06); usa `account_request_deletion()`; resposta `409 sole_owner` quando bloqueada por RN-ACC-07 |
 
 ## 4. Perfil profissional (`/me/profile`)
 
@@ -507,7 +507,7 @@ Todas exigem `platform_role` adequado e MFA.
 | --- | --- | --- |
 | GET | `/admin/overview` | Indicadores gerais |
 | GET | `/admin/users`, `/admin/users/{id}` | Busca e detalhe (dados de cadastro) |
-| POST | `/admin/users/{id}/suspend`, `/reactivate` | Suspensão (admin) |
+| POST | `/admin/users/{id}/suspend`, `/reactivate` | Suspensão e reativação (admin), com `reason` obrigatório (10 a 500 caracteres); usa `admin_set_user_status()` |
 | GET | `/admin/organizations`, `/admin/organizations/{id}` | Empresas |
 | POST | `/admin/organizations/{id}/verification/decide` | Aprovar ou rejeitar verificação |
 | GET | `/admin/jobs`, `/admin/applications` | Visão agregada (sem conteúdo de currículos) |

@@ -269,10 +269,14 @@ Legenda da situação: ✅ comprovado no protótipo de RLS (PostgreSQL 16, `docs
 | --- | --- | --- | --- |
 | Papel da aplicação sem `SUPERUSER`/`BYPASSRLS`; API recusa subir com papel privilegiado | 1 | pytest | ✅ verificação do papel (T01); 🔜 recusa de inicialização |
 | Contexto vazio após transação anterior (`nullif`) | 1 | pytest | ✅ T02 |
-| RLS direto no banco com papel `vagas_app`, para cada célula da matriz | 1 em diante | pytest, a cada PR | ✅ parcial (T03 a T20); 🔜 matriz completa |
+| RLS direto no banco com papel `vagas_app`, para cada célula da matriz | 1 em diante | pytest, a cada PR | ✅ parcial no protótipo (T03 a T24); 🔜 matriz completa |
 | Isolamento entre usuários (todas as rotas `/me`) | 2 em diante | pytest, a cada PR | 🔜 |
 | Isolamento entre organizações (todas as rotas `/orgs`) | 2 em diante | pytest, a cada PR | ✅ no banco (T05 a T07); 🔜 nas rotas |
-| Login, sessão e cadastro sem expor tabelas | 2 | pytest | ✅ no banco (T11 a T13); 🔜 nos endpoints |
+| Login, sessão e cadastro sem expor tabelas | 2 | pytest | ✅ no banco (T11 a T13) |
+| Cadastro duplicado devolve NULL, sem id inexistente; resposta da API idêntica nos dois casos | 2 | pytest | ✅ no banco (T13; mutação M1 detecta a versão antiga); 🔜 resposta idêntica e e-mail de aviso no endpoint |
+| Status da conta (pedido e cancelamento de exclusão, suspensão e reativação) só por funções, com autorização e auditoria; `status`, `platform_role` e `email` protegidos por privilégio de coluna | 2 e 7 | pytest | ✅ no banco (T23a a T23f; mutações M2, M3, M4); 🔜 endpoints e e-mails |
+| Funções privilegiadas: `search_path` terminando em `pg_temp`, donos sem login, sem `EXECUTE` para `PUBLIC` | 1 | pytest | ✅ T19 |
+| Ataque de sombra com tabela temporária | 1 | pytest | ✅ T24; mutações M5 (ataque funciona sem `pg_temp` por último) e M6 (bloqueado com `pg_temp` por último) |
 | Auditoria imutável e leitura por organização, titular e admin | 1 e 2 | pytest | ✅ T14, T21 |
 | Admin só com concessão; papel forjado não vale | 1 e 7 | pytest | ✅ T15 |
 | Proteção do `owner` contra `admin` (API e gatilho) | 2 | pytest | 🔜 |

@@ -49,7 +49,8 @@ INSERT INTO interview_schedules (id, application_id, organization_id, notes_inte
  ('a3000000-0000-0000-0000-00000000000a','a1000000-0000-0000-0000-00000000000a','11111111-0000-0000-0000-000000000001','nota interna');
 
 INSERT INTO user_sessions (id, user_id, token_hash, absolute_expires_at) VALUES
- ('a4000000-0000-0000-0000-00000000000a','aaaaaaaa-0000-0000-0000-000000000001',sha256('token-da-candidata-a'::bytea), now() + interval '1 day');
+ ('a4000000-0000-0000-0000-00000000000a','aaaaaaaa-0000-0000-0000-000000000001',sha256('token-da-candidata-a'::bytea), now() + interval '1 day'),
+ ('a4000000-0000-0000-0000-00000000000b','bbbbbbbb-0000-0000-0000-000000000001',sha256('token-do-candidato-b'::bytea), now() + interval '1 day');
 
 INSERT INTO audit_logs (actor_user_id, organization_id, subject_user_id, visible_to_subject, action) VALUES
  ('cccccccc-0000-0000-0000-000000000001','11111111-0000-0000-0000-000000000001',NULL,false,'job.publish'),
