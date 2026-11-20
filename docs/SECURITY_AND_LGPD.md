@@ -67,7 +67,7 @@ sequenceDiagram
 
 | Fluxo | Regras |
 | --- | --- |
-| Cadastro | aceite de termos e privacidade obrigatório e registrado com versão, data e IP; e-mail de verificação válido por 24 h |
+| Cadastro | aceite de termos e privacidade obrigatório e registrado com versão, data e IP; e-mail de verificação válido por 24 h; resposta idêntica exista ou não o e-mail, e-mail só pela fila e aviso de tentativa limitado a 1 por endereço a cada 24 h (API_SPECIFICATION.md, contrato de `POST /auth/signup`) |
 | Verificação de e-mail | token de uso único; reenvio no máximo 1 a cada 60 s; sem verificação, a conta existe mas não pode candidatar nem publicar |
 | Login | 5 tentativas por minuto por IP + e-mail; após 10 falhas seguidas no mesmo e-mail, atraso progressivo e e-mail de alerta ao titular |
 | Novo dispositivo | e-mail "novo acesso à sua conta" com opção de encerrar a sessão |
@@ -96,6 +96,7 @@ Ver [PERMISSIONS.md](PERMISSIONS.md). Resumo: permissão verificada no backend e
 | Redirecionamentos | só para caminhos internos ou lista permitida |
 | Dependências | `pip-audit`, `npm audit` e Dependabot; atualização de segurança em até 7 dias para falhas críticas |
 | Segredos | só em variáveis de ambiente do Render; `.env` no `.gitignore`; varredura com gitleaks no CI |
+| Conexão com o banco | ver seção 4.3 |
 
 ### 4.1 Cadeia de confiança do IP do cliente (proxy)
 
@@ -135,6 +136,16 @@ O navegador envia arquivos direto ao bucket por URL assinada (SYSTEM_ARCHITECTUR
 | URL de download | Validade de 5 minutos, gerada só após checagem de permissão; nunca para objetos em `quarantine/` |
 
 Testes (Fase 3): upload de outra origem é recusado pelo CORS; upload acima do tamanho assinado é recusado; a CSP bloqueia conexão com domínio não listado (Playwright).
+
+### 4.3 Autenticação e criptografia das conexões com o banco
+
+| Ambiente | Autenticação dos papéis | Criptografia em trânsito |
+| --- | --- | --- |
+| Protótipo descartável (`docs/prototypes/`) | `trust` (sem senha), **exclusivamente** num cluster temporário local, apagado ao fim do teste e sem nenhum dado real | Não se aplica (socket local) |
+| Desenvolvimento local (`docker compose`) | **SCRAM-SHA-256** com senha para todos os papéis (`password_encryption = scram-sha-256` e `pg_hba` só com `scram-sha-256`); **`trust` proibido** | Recomendado; obrigatório a partir do momento em que o banco aceitar conexão fora do próprio computador |
+| Homologação e produção | **SCRAM-SHA-256**, uma senha forte e diferente por papel (`vagas_owner`, `vagas_app`, `vagas_worker`, `vagas_readonly`), guardada só em variáveis de ambiente; MD5 e `trust` proibidos | **TLS obrigatório** (`sslmode=verify-full` quando o certificado do provedor puder ser validado; no mínimo `require`). A API e o worker recusam iniciar se a URL de conexão de homologação ou produção não exigir TLS |
+
+Pontos a confirmar na Fase 1 (tarefa 1.7), pela documentação oficial do Render: se as conexões **internas** (rede privada entre serviços) oferecem TLS e com qual modo, e qual método de senha o Render Postgres usa. Se alguma exigência acima não puder ser cumprida no Render, a Fase 1 para e a alternativa vai para aprovação; a exigência não é afrouxada em silêncio.
 
 ## 5. Arquivos
 
@@ -273,7 +284,10 @@ Legenda da situação: ✅ comprovado no protótipo de RLS (PostgreSQL 16, `docs
 | Isolamento entre usuários (todas as rotas `/me`) | 2 em diante | pytest, a cada PR | 🔜 |
 | Isolamento entre organizações (todas as rotas `/orgs`) | 2 em diante | pytest, a cada PR | ✅ no banco (T05 a T07); 🔜 nas rotas |
 | Login, sessão e cadastro sem expor tabelas | 2 | pytest | ✅ no banco (T11 a T13) |
-| Cadastro duplicado devolve NULL, sem id inexistente; resposta da API idêntica nos dois casos | 2 | pytest | ✅ no banco (T13; mutação M1 detecta a versão antiga); 🔜 resposta idêntica e e-mail de aviso no endpoint |
+| Cadastro duplicado devolve NULL, sem id inexistente | 1 | pytest | ✅ no banco (T13; mutação M1 detecta a versão antiga) |
+| Sem descoberta de contas em cadastro, recuperação de senha e reenvio de verificação: resposta idêntica, uma tarefa enfileirada sempre, nenhum e-mail na requisição, aviso limitado a 1 por endereço a cada 24 h, diferença de tempo dentro do limite | 2 | pytest | 🔜 critério obrigatório da Fase 2 |
+| Conexões com o banco: SCRAM-SHA-256 em todos os ambientes reais, TLS obrigatório em homologação e produção, `trust` proibido fora do protótipo | 1 | pytest e verificação de configuração | 🔜 critério obrigatório da Fase 1 |
+| Pool de conexões real (SQLAlchemy assíncrono) sem vazamento de contexto entre requisições | 1 | pytest | 🔜 critério obrigatório da Fase 1 |
 | Status da conta (pedido e cancelamento de exclusão, suspensão e reativação) só por funções, com autorização e auditoria; `status`, `platform_role` e `email` protegidos por privilégio de coluna | 2 e 7 | pytest | ✅ no banco (T23a a T23f; mutações M2, M3, M4); 🔜 endpoints e e-mails |
 | Funções privilegiadas: `search_path` terminando em `pg_temp`, donos sem login, sem `EXECUTE` para `PUBLIC` | 1 | pytest | ✅ T19 |
 | Ataque de sombra com tabela temporária | 1 | pytest | ✅ T24; mutações M5 (ataque funciona sem `pg_temp` por último) e M6 (bloqueado com `pg_temp` por último) |
@@ -289,7 +303,8 @@ Legenda da situação: ✅ comprovado no protótipo de RLS (PostgreSQL 16, `docs
 | Upload malicioso (extensão falsa, ZIP bomb, path traversal, PDF com JS) | 3 | pytest com arquivos de teste | 🔜 |
 | CORS do bucket e CSP | 3 | Playwright | 🔜 |
 | Injeção de instruções em documento | 3 e 6 | conjunto de avaliação de IA | 🔜 |
-| Exclusão de conta e de organização (transacional, e-mail liberado) | 2 e 7 | pytest | 🔜 |
+| Exclusão de conta (transacional, e-mail liberado, novo cadastro possível) | 2 | pytest | 🔜 critério obrigatório da Fase 2 |
+| Exclusão de organização (transacional, anonimização, CNPJ liberado, histórico do candidato preservado) | 7 | pytest | 🔜 critério obrigatório da Fase 7 |
 | Webhook com assinatura inválida e repetido | 7 | pytest | 🔜 |
 | Varredura de dependências e segredos | 1 em diante | CI semanal | 🔜 |
 | Teste de carga (busca, login, pipeline) | 8 | k6 ou Locust em homologação | 🔜 |

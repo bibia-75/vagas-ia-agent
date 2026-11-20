@@ -67,6 +67,9 @@ Telas de cadastro e login, envio de e-mail real, IA, upload de documentos pela i
 - [ ] Painel antigo continua funcionando em `legacy/`, com testes de antes e depois registrados.
 - [ ] API e testes de isolamento usam papel sem `SUPERUSER` e sem `BYPASSRLS`; a API recusa subir com papel privilegiado.
 - [ ] Nenhum serviço pago criado; estimativa de custos entregue em `docs/INFRA_COSTS.md`.
+- [ ] **Pool de conexões real testado:** com o SQLAlchemy assíncrono e o mesmo driver da produção, um pool de tamanho 1 (forçando reutilização da conexão) e requisições concorrentes alternando usuários e organizações; nenhuma requisição enxerga o contexto (`app.user_id`, `app.org_id`) da anterior, inclusive depois de erro e de rollback no meio da transação.
+- [ ] **Render verificado pela documentação oficial** (ou por teste autorizado, sem dados reais e sem nada pago): criação dos papéis da D-04, TLS nas conexões internas e método de senha. Resultado registrado no relatório e em `docs/DECISIONS.md`; se algo não for possível, a fase para para aprovação.
+- [ ] **Conexões com o banco:** `docker compose` local com SCRAM-SHA-256 e sem `trust`; a API e o worker recusam iniciar em homologação ou produção sem TLS na URL de conexão (teste automatizado); `trust` só no protótipo descartável (SECURITY_AND_LGPD.md, seção 4.3).
 - [ ] Relatório da fase entregue (modelo abaixo).
 
 ### Testes esperados ao fim da Fase 1
@@ -91,7 +94,10 @@ Telas de cadastro e login, envio de e-mail real, IA, upload de documentos pela i
 ### Fase 2: Autenticação e organizações
 
 Entregas: endpoints e telas de cadastro, verificação de e-mail, login, logout, sessões e dispositivos, recuperação e troca de senha, troca de e-mail; aceite de termos com versão; perfil básico de candidato; criação de organização com CNPJ validado, perfil da empresa e logo; convites e aceite; gestão de membros e papéis; verificação de empresa (D-15); seletor de contexto; e-mails transacionais (D-12).
-Critérios: fluxos de SECURITY_AND_LGPD.md seção 2.3 testados ponta a ponta no Playwright; limites de tentativa testados; matriz de permissões testada nos endpoints reais; isolamento testado em todas as rotas `/me` e `/orgs`.
+Critérios (todos obrigatórios para concluir a fase):
+- Fluxos de SECURITY_AND_LGPD.md seção 2.3 testados ponta a ponta no Playwright; limites de tentativa testados; matriz de permissões testada nos endpoints reais; isolamento testado em todas as rotas `/me` e `/orgs`.
+- **Sem descoberta de contas** em `POST /auth/signup`, `/auth/password/forgot` e `/auth/email/resend`: para e-mail novo e já cadastrado, mesmo status, corpo e cabeçalhos e nenhum cookie; exatamente uma tarefa enfileirada em cada caso e nenhum e-mail enviado durante a requisição (provedor de e-mail falso que falha se for chamado fora do worker); no worker, verificação para conta nova e aviso para e-mail existente, limitado a 1 por endereço a cada 24 h; diferença entre as medianas de tempo dos dois casos menor que 50 ms em 100 requisições de cada, no ambiente local.
+- **Exclusão de conta completa testada:** pedido e cancelamento (já comprovados no banco pelo T23), `account_delete_finalize` numa única transação (falha simulada no meio desfaz tudo), anonimização das candidaturas e mensagens, arquivos na fila de exclusão, e-mail original liberado e **novo cadastro com o mesmo e-mail funcionando**, registros legais mantidos apontando para o registro anonimizado.
 
 ### Fase 3: Perfil profissional e documentos
 
@@ -116,7 +122,9 @@ Critérios: zero invenções no conjunto de avaliação do Resume Agent; teste d
 ### Fase 7: Monetização e administração
 
 Entregas: planos configuráveis; checkout e assinaturas no Mercado Pago; webhooks idempotentes com validação de assinatura; carência, expiração e volta ao plano gratuito; reconciliação diária; contadores e bloqueio por limite; painel administrativo completo; MFA para a equipe; acesso administrativo justificado.
-Critérios: testes com credenciais de teste do Mercado Pago cobrindo aprovação, recusa, inadimplência, cancelamento e webhook repetido ou falso.
+Critérios (todos obrigatórios para concluir a fase):
+- Testes com credenciais de teste do Mercado Pago cobrindo aprovação, recusa, inadimplência, cancelamento e webhook repetido ou falso.
+- **Exclusão de organização completa testada:** pedido e cancelamento pelo `owner`, `org_delete_finalize` numa única transação (falha simulada no meio desfaz tudo), candidaturas reduzidas ao mínimo e preservadas no histórico do candidato, vagas mantidas como registro encerrado, membros removidos, arquivos na fila de exclusão, CNPJ liberado para novo cadastro, pagamentos e auditoria mantidos, chaves estrangeiras válidas ao final.
 
 ### Fase 8: Testes e lançamento
 

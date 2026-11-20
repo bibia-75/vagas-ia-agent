@@ -87,11 +87,11 @@ Implementação com contador no Key Value.
 | --- | --- | --- |
 | POST | `/auth/signup` | Cria conta; envia e-mail de verificação |
 | POST | `/auth/email/verify` | Confirma e-mail com token |
-| POST | `/auth/email/resend` | Reenvia verificação (resposta sempre 202) |
+| POST | `/auth/email/resend` | Reenvia verificação (resposta sempre 202, idêntica; e-mail só pela fila; ver regras contra descoberta de contas no contrato de cadastro) |
 | POST | `/auth/login` | Cria sessão |
 | POST | `/auth/logout` | Encerra a sessão atual |
 | POST | `/auth/logout-all` | Encerra todas as sessões do usuário |
-| POST | `/auth/password/forgot` | Envia link de redefinição (resposta sempre 202) |
+| POST | `/auth/password/forgot` | Envia link de redefinição (resposta sempre 202, idêntica; e-mail só pela fila; ver regras contra descoberta de contas no contrato de cadastro) |
 | POST | `/auth/password/reset` | Redefine com token; revoga todas as sessões |
 | POST | `/auth/password/change` | Troca de senha logado (exige senha atual) |
 | GET | `/auth/session` | Usuário atual, contextos disponíveis e token CSRF |
@@ -125,7 +125,16 @@ Saída `202` (sempre a mesma, exista ou não o e-mail):
 { "email_verification_required": true }
 ```
 
-A resposta **não** inclui `user_id`: com e-mail já cadastrado não existe um id novo para devolver, e incluir um id só no caso de sucesso revelaria quem tem conta. Internamente, `auth_register_user` devolve o id criado ou NULL (DATABASE_DESIGN.md, seção 4.4). No NULL, a API não grava consentimentos nem tokens e só envia ao dono do e-mail um aviso de tentativa de cadastro. Tempo de resposta semelhante nos dois casos (o hash Argon2id é calculado sempre, antes da chamada).
+A resposta **não** inclui `user_id`: com e-mail já cadastrado não existe um id novo para devolver, e incluir um id só no caso de sucesso revelaria quem tem conta. Internamente, `auth_register_user` devolve o id criado ou NULL (DATABASE_DESIGN.md, seção 4.4). No NULL, a API não grava consentimentos nem tokens.
+
+**Regras contra descoberta de contas (obrigatórias, testadas na Fase 2):**
+
+1. **Mesma resposta:** status `202`, mesmo corpo, mesmos cabeçalhos e nenhum cookie de sessão nos dois casos. O cadastro nunca cria sessão; o usuário entra depois de verificar o e-mail.
+2. **Mesmo trabalho no caminho da requisição:** o hash Argon2id é calculado sempre, antes da chamada ao banco, e a API **enfileira exatamente uma tarefa** `signup_email` nos dois casos, só depois do commit. **Nenhum e-mail é enviado durante a requisição**, em nenhum dos casos, para que o tempo do provedor de e-mail não revele a diferença.
+3. **A tarefa decide no worker:** conta nova recebe o e-mail de verificação; e-mail já cadastrado recebe, no máximo, um aviso de tentativa de cadastro.
+4. **Aviso sem abuso:** no máximo **1 aviso por endereço a cada 24 h**; tentativas além disso são descartadas em silêncio e só contadas em métrica (sem dado pessoal). O aviso é neutro ("alguém tentou criar uma conta com este e-mail; se foi você, entre ou redefina a senha"), não traz dados de quem tentou e não contém link que execute ação. Assim, repetir o cadastro com o e-mail de outra pessoa não vira um meio de enviar spam a ela.
+5. **Conta suspensa, excluída em carência ou não verificada** segue o mesmo caminho do e-mail já cadastrado (mesma resposta; tarefa decide).
+6. As mesmas regras valem para `POST /auth/password/forgot` e `POST /auth/email/resend`: resposta `202` idêntica, uma tarefa enfileirada sempre, decisão no worker, limite de envios por endereço.
 
 ### Contrato: `POST /auth/login`
 
